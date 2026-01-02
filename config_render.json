@@ -1,0 +1,18 @@
+{
+    "data_manager": {
+        "symbol": "ETHUSDT",
+        "timeframe": "15m",
+        "days_back": 180,
+        "min_val_usd": 100,
+        "output_path": "/data/ETHUSDT_15m.csv"
+    },
+    "trading_model": {
+        "input_file": "/data/ETHUSDT_15m.csv",
+        "output_dir": "/data/results",
+        "experiment_name": "ETH_RENDER_V98",
+        "target_horizon": 5,
+        "apply_temporal_weight": "s",
+        "weight_mode": 3,
+        "add_multi_tf": "n"
+    }
+}
