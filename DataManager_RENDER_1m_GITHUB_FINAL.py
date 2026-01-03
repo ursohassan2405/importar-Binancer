@@ -178,6 +178,40 @@ def processar_microestrutura(df_klines, trades_np, interval):
     
     return df_klines, total_time
 
+def delete_file_from_github(token, repo_full_name, file_path):
+    """Tenta excluir um arquivo do repositório se ele existir."""
+    file_name = os.path.basename(file_path)
+    url_get = f"https://api.github.com/repos/{repo_full_name}/contents/{file_name}"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    
+    # 1. Tentar obter o SHA do arquivo existente
+    response_get = requests.get(url_get, headers=headers)
+    
+    if response_get.status_code == 200:
+        sha = response_get.json().get('sha')
+        print(f"[GITHUB] Arquivo '{file_name}' encontrado. Tentando excluir...")
+        
+        # 2. Excluir o arquivo
+        url_delete = f"https://api.github.com/repos/{repo_full_name}/contents/{file_name}"
+        data = {
+            "message": f"Excluindo arquivo temporário: {file_name}",
+            "sha": sha
+        }
+        response_delete = requests.delete(url_delete, headers=headers, json=data)
+        
+        if response_delete.status_code == 200:
+            print(f"[GITHUB] Exclusão de '{file_name}' bem-sucedida.")
+            return True
+        else:
+            print(f"[ERRO GITHUB] Falha ao excluir ({response_delete.status_code}): {response_delete.json().get('message', 'Erro desconhecido')}")
+            return False
+    else:
+        print(f"[GITHUB] Arquivo '{file_name}' não encontrado. Prosseguindo.")
+        return True
+
 def upload_file_to_github(token, repo_full_name, file_path):
     """Faz o upload de um arquivo para o repositório via API de Conteúdo."""
     print(f"[GITHUB] Tentando fazer upload de {os.path.basename(file_path)} para {repo_full_name}")
@@ -191,33 +225,19 @@ def upload_file_to_github(token, repo_full_name, file_path):
         print(f"[ERRO GITHUB] Falha ao ler o arquivo: {e}")
         return None
 
-    # 2. Tentar obter o SHA do arquivo existente (para atualização)
-    file_name = os.path.basename(file_path)
-    url_get = f"https://api.github.com/repos/{repo_full_name}/contents/{file_name}"
-    headers_get = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    
-    response_get = requests.get(url_get, headers=headers_get)
-    sha = None
-    if response_get.status_code == 200:
-        sha = response_get.json().get('sha')
-        print(f"[GITHUB] Arquivo existente encontrado. SHA: {sha}")
-
-    # 3. Fazer o upload/atualização
-    url_put = f"https://api.github.com/repos/{repo_full_name}/contents/{file_name}"
-    headers_put = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    data = {
-        "message": f"Upload de dados de backtest: {file_name} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        "content": encoded_content,
-        "sha": sha # Inclui o SHA se for uma atualização
-    }
-    
-    response_put = requests.put(url_put, headers=headers_put, json=data)
+            # 2. Fazer o upload (sem SHA, pois garantimos que o arquivo não existe)
+            file_name = os.path.basename(file_path)
+            url_put = f"https://api.github.com/repos/{repo_full_name}/contents/{file_name}"
+            headers_put = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            data = {
+                "message": f"Upload de dados de backtest: {file_name} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                "content": encoded_content
+            }
+            
+            response_put = requests.put(url_put, headers=headers_put, json=data)
     
     if response_put.status_code in [200, 201]:
         print("[GITHUB] Upload/Atualização concluído com sucesso.")
@@ -285,7 +305,10 @@ def main():
             subprocess.run(zip_command, check=True, capture_output=True)
             print(f"[SUCESSO] Arquivos compactados em: {ZIP_PATH}")
             
-            # 2. Faz o upload do ZIP
+            # 2. Exclui o arquivo antigo (se existir)
+            delete_file_from_github(GITHUB_TOKEN, REPO_FULL_NAME, ZIP_PATH)
+            
+            # 3. Faz o upload do ZIP
             upload_url = upload_file_to_github(GITHUB_TOKEN, REPO_FULL_NAME, ZIP_PATH)
             
             if upload_url:
