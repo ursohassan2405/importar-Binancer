@@ -2,24 +2,14 @@
     "data_manager": {
         "symbol": "RUNEUSDT",
         "timeframe": "15m",
-        "days_back": 180,
-        "min_val_usd": 10,
-        "output_path": "/data/RUNEUSDT_15m.csv"
-    }
-}
-
-{
-    "data_manager": {
-        "symbol": "ETHUSDT",
-        "timeframe": "15m",
-        "days_back": 180,
+        "days_back": 30,
         "min_val_usd": 100,
-        "output_path": "/data/ETHUSDT_15m.csv"
+        "output_path": "/data/RUNEUSDT_15m.csv"
     },
     "trading_model": {
-        "input_file": "/data/ETHUSDT_15m.csv",
+        "input_file": "/data/RUNEUSDT_15m.csv",
         "output_dir": "/data/results",
-        "experiment_name": "ETH_RENDER_V98",
+        "experiment_name": "RUNE_RENDER_V98",
         "target_horizon": 5,
         "apply_temporal_weight": "s",
         "weight_mode": 3,
