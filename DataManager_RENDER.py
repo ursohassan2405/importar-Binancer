@@ -33,7 +33,6 @@ def download_klines_chunk(symbol, interval, start_ms, end_ms, session):
     curr = start_ms
     limit = 1500
     
-    # Mapeamento de ms por intervalo
     ms_map = {
         "1m": 60000, "3m": 180000, "5m": 300000, "15m": 900000,
         "30m": 1800000, "1h": 3600000, "2h": 7200000, "4h": 14400000
@@ -184,23 +183,22 @@ def main():
     
     dm_cfg = config['data_manager']
     
-    # MAPEAMENTO DE VARIÁVEIS (Substituindo os inputs)
+    # MAPEAMENTO DE VARIÁVEIS
     simbolo = dm_cfg.get('symbol', 'RUNEUSDT')
     tfs_input = dm_cfg.get('timeframe', '15m')
     tfs = [x.strip() for x in tfs_input.split(',')]
     
     days_back = dm_cfg.get('days_back', 180)
     min_val = dm_cfg.get('min_val_usd', 500)
-    pasta = os.path.dirname(dm_cfg.get('output_path', '/data/')) or "./datasets"
-    ativar_micro = "s" # Sempre ativo para Whale Hunter
+    
+    # IMPORTANTE: Na Render, o disco é montado em /data
+    pasta = "/data" 
 
-    # Calcular datas baseadas no days_back
+    # Calcular datas
     end_dt = datetime.now()
     start_dt = end_dt - timedelta(days=days_back)
     start_ms = int(start_dt.timestamp() * 1000)
     end_ms = int(end_dt.timestamp() * 1000)
-
-    if not os.path.isdir(pasta): os.makedirs(pasta)
 
     # PASSO 1: DOWNLOAD DE AGRESSÃO
     print(f"\n>>> PASSO 1: Baixando Agressão Institucional (Whale Hunter Mode: >${min_val})")
@@ -221,6 +219,7 @@ def main():
             print(f"    [+] Injetando Agressão Institucional em {tf}...")
             df_final = processar_microestrutura_dinamica(df_final, trades_np, tf)
         
+        # Salva direto no disco montado
         saida_csv = os.path.join(pasta, f"{simbolo}_{tf}.csv")
         df_final.to_csv(saida_csv, index=False)
         
