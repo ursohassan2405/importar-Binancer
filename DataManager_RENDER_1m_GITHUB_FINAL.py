@@ -225,19 +225,19 @@ def upload_file_to_github(token, repo_full_name, file_path):
         print(f"[ERRO GITHUB] Falha ao ler o arquivo: {e}")
         return None
 
-            # 2. Fazer o upload (sem SHA, pois garantimos que o arquivo não existe)
-            file_name = os.path.basename(file_path)
-            url_put = f"https://api.github.com/repos/{repo_full_name}/contents/{file_name}"
-            headers_put = {
-                "Authorization": f"token {token}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-            data = {
-                "message": f"Upload de dados de backtest: {file_name} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                "content": encoded_content
-            }
-            
-            response_put = requests.put(url_put, headers=headers_put, json=data)
+        # 2. Fazer o upload (sem SHA, pois garantimos que o arquivo não existe)
+        file_name = os.path.basename(file_path)
+        url_put = f"https://api.github.com/repos/{repo_full_name}/contents/{file_name}"
+        headers_put = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        data = {
+            "message": f"Upload de dados de backtest: {file_name} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "content": encoded_content
+        }
+        
+        response_put = requests.put(url_put, headers=headers_put, json=data)
     
     if response_put.status_code in [200, 201]:
         print("[GITHUB] Upload/Atualização concluído com sucesso.")
