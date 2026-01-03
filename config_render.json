@@ -1,5 +1,15 @@
 {
     "data_manager": {
+        "symbol": "RUNEUSDT",
+        "timeframe": "15m",
+        "days_back": 180,
+        "min_val_usd": 10,
+        "output_path": "/data/RUNEUSDT_15m.csv"
+    }
+}
+
+{
+    "data_manager": {
         "symbol": "ETHUSDT",
         "timeframe": "15m",
         "days_back": 180,
