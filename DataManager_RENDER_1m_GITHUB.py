@@ -34,8 +34,13 @@ def load_config():
         print(f"[ERRO] Erro ao decodificar o arquivo JSON '{CONFIG_FILE}'.")
         sys.exit(1)
 
-# Funções de Download e Processamento (mantidas do script anterior)
-# ... (download_klines_chunk, download_futures_klines, download_agg_trades, processar_microestrutura)
+# Funções de Download e Processamento
+
+def calculate_time_range(days_back):
+    """Calcula o range de tempo para o download."""
+    end_ms = int(time.time() * 1000)
+    start_ms = end_ms - (days_back * 24 * 3600 * 1000)
+    return start_ms, end_ms
 
 def download_klines_chunk(symbol, interval, start_ms, end_ms, session):
     """Download de um chunk de klines com tratamento de rate limit."""
