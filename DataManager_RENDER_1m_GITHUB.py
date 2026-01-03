@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 CONFIG_FILE = 'config_datamanager_1m.json'
 OUTPUT_DIR = '/data'
 ZIP_PATH = '/tmp/dados_1m.zip'
-GITHUB_TOKEN = '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' # Token fornecido pelo usuário
+GITHUB_TOKEN = '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' # Token fornecido pelo usuário
 REPO_NAME = f"render-data-upload-{int(time.time())}"
 # --------------------
 
