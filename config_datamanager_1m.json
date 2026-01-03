@@ -1,0 +1,6 @@
+{
+    "symbols": ["PENDLEUSDT", "ETHUSDT"],
+    "timeframe": "1m",
+    "days_back": 180,
+    "min_val_usd": 500
+}
