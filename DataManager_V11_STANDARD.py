@@ -115,9 +115,9 @@ def processar_microestrutura_dinamica(rows_1m, trades_np, tf_str):
     for col in ["ts","open","high","low","close","volume","quote_volume","trades","taker_buy_base","taker_buy_quote"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     
-    if trades_np is not None:
+    df["ts"] = df["ts"].astype(np.int64)\n\n    if trades_np is not None:
         ms_1m = 60000
-        ts_target_1m = (trades_np[:, 0] // ms_1m) * ms_1m
+        ts_target_1m = ((trades_np[:, 0] // ms_1m) * ms_1m).astype(np.int64)
         df_agg = pd.DataFrame({'ts': ts_target_1m, 'cum_delta': np.where(trades_np[:, 3].astype(bool), -trades_np[:, 2], trades_np[:, 2]), 'total_vol_agg': trades_np[:, 2], 'buy_vol_agg': np.where(~trades_np[:, 3].astype(bool), trades_np[:, 2], 0), 'sell_vol_agg': np.where(trades_np[:, 3].astype(bool), trades_np[:, 2], 0)})
         micro_1m = df_agg.groupby('ts').sum().reset_index()
         df = pd.merge(df, micro_1m, on='ts', how='left').fillna(0)
