@@ -28,56 +28,77 @@ def get_first_id(symbol, start_ms):
     except: pass
     return None
 
-download_agg_trades_parallel(
-    symbol,
-    start_ms,
-    end_ms,
-    min_val_usd
-)
-
+def download_agg_trades_parallel(symbol, start_ms, end_ms, min_val_usd=500):
     log(f"\n[INFO] Iniciando Captura de Baleias (Filtro: >${min_val_usd})")
+
     curr_id = get_first_id(symbol, start_ms)
     use_id = True if curr_id else False
-    if not use_id: curr_ts = start_ms
-    
+    if not use_id:
+        curr_ts = start_ms
+
     all_chunks = []
     total_whales = 0
-    
+
     with requests.Session() as session:
         while True:
             try:
-                url = f"https://fapi.binance.com/fapi/v1/aggTrades?symbol={symbol}&{'fromId' if use_id else 'startTime'}={curr_id if use_id else curr_ts}&limit=1000"
+                url = (
+                    f"https://fapi.binance.com/fapi/v1/aggTrades"
+                    f"?symbol={symbol}&"
+                    f"{'fromId' if use_id else 'startTime'}="
+                    f"{curr_id if use_id else curr_ts}&limit=1000"
+                )
+
                 res = session.get(url, timeout=15)
+
                 if res.status_code == 429:
                     time.sleep(20)
                     continue
+
                 data = res.json()
-                if not data or not isinstance(data, list): break
-                
-                last_ts = int(data[-1]['T'])
-                last_id_seen = int(data[-1]['a'])
-                
+                if not data or not isinstance(data, list):
+                    break
+
+                last_ts = int(data[-1]["T"])
+                last_id_seen = int(data[-1]["a"])
+
                 chunk = []
                 for t in data:
-                    ts = int(t['T'])
-                    if ts > end_ms: break
-                    p, q = float(t['p']), float(t['q'])
+                    ts = int(t["T"])
+                    if ts > end_ms:
+                        break
+
+                    p, q = float(t["p"]), float(t["q"])
                     if p * q >= min_val_usd:
-                        chunk.append([ts, p, q, 1 if t['m'] else 0])
-                
+                        chunk.append([
+                            ts,
+                            p,
+                            q,
+                            1 if t["m"] else 0
+                        ])
+
                 if chunk:
                     all_chunks.append(np.array(chunk))
                     total_whales += len(chunk)
-                
+
                 if last_id_seen % 10000 < 1000:
-                    dt = pd.to_datetime(last_ts, unit='ms').strftime('%Y-%m-%d %H:%M')
+                    dt = pd.to_datetime(last_ts, unit="ms").strftime("%Y-%m-%d %H:%M")
                     log(f"    >>> Progresso: {dt} | Baleias: {total_whales}")
-                
-                if last_ts > end_ms: break
-                if use_id: curr_id = last_id_seen + 1
-                else: curr_ts = last_ts + 1
+
+                if last_ts > end_ms:
+                    break
+
+                if use_id:
+                    curr_id = last_id_seen + 1
+                else:
+                    curr_ts = last_ts + 1
+
                 time.sleep(0.01)
-            except: time.sleep(5)
+
+            except Exception as e:
+                log(f"[ERRO] {e}")
+                time.sleep(5)
+
     return np.vstack(all_chunks) if all_chunks else None
 
 def download_klines_chunk(symbol, interval, start_ms, end_ms, session):
