@@ -31,69 +31,65 @@ def get_first_id(symbol, start_ms):
 def download_agg_trades_parallel(symbol, start_ms, end_ms, min_val_usd=500):
     log(f"\n[INFO] Iniciando Captura de Baleias (Filtro: >${min_val_usd})")
 
-    curr_id = get_first_id(symbol, start_ms)
-    use_id = True if curr_id else False
-    if not use_id:
-        curr_ts = start_ms
-
     all_chunks = []
     total_whales = 0
+    curr = start_ms
+    hour_ms = 3600 * 1000  # mesma granularidade conceitual do V11
 
     with requests.Session() as session:
-        while True:
+        while curr < end_ms:
             try:
-                url = (
-                    f"https://fapi.binance.com/fapi/v1/aggTrades"
-                    f"?symbol={symbol}&"
-                    f"{'fromId' if use_id else 'startTime'}="
-                    f"{curr_id if use_id else curr_ts}&limit=1000"
-                )
+                next_stop = min(curr + hour_ms, end_ms)
+                last_id = None
 
-                res = session.get(url, timeout=15)
+                while True:
+                    time.sleep(0.1)
 
-                if res.status_code == 429:
-                    time.sleep(20)
-                    continue
+                    if last_id is None:
+                        url = (
+                            f"https://fapi.binance.com/fapi/v1/aggTrades"
+                            f"?symbol={symbol}&startTime={curr}&endTime={next_stop}&limit=1000"
+                        )
+                    else:
+                        url = (
+                            f"https://fapi.binance.com/fapi/v1/aggTrades"
+                            f"?symbol={symbol}&fromId={last_id + 1}&limit=1000"
+                        )
 
-                data = res.json()
-                if not data or not isinstance(data, list):
-                    break
+                    res = session.get(url, timeout=20)
 
-                last_ts = int(data[-1]["T"])
-                last_id_seen = int(data[-1]["a"])
+                    if res.status_code in (418, 429):
+                        log("[RATE LIMIT] Pausando 30s...")
+                        time.sleep(30)
+                        continue
 
-                chunk = []
-                for t in data:
-                    ts = int(t["T"])
-                    if ts > end_ms:
+                    data = res.json()
+                    if not isinstance(data, list) or not data:
                         break
 
-                    p, q = float(t["p"]), float(t["q"])
-                    if p * q >= min_val_usd:
-                        chunk.append([
-                            ts,
-                            p,
-                            q,
-                            1 if t["m"] else 0
-                        ])
+                    chunk = []
+                    for t in data:
+                        ts = int(t["T"])
+                        if ts >= next_stop:
+                            break
 
-                if chunk:
-                    all_chunks.append(np.array(chunk))
-                    total_whales += len(chunk)
+                        p, q = float(t["p"]), float(t["q"])
+                        if p * q >= min_val_usd:
+                            chunk.append([ts, p, q, 1 if t["m"] else 0])
 
-                if last_id_seen % 10000 < 1000:
-                    dt = pd.to_datetime(last_ts, unit="ms").strftime("%Y-%m-%d %H:%M")
-                    log(f"    >>> Progresso: {dt} | Baleias: {total_whales}")
+                    if chunk:
+                        all_chunks.append(np.array(chunk))
+                        total_whales += len(chunk)
 
-                if last_ts > end_ms:
-                    break
+                    last_id = int(data[-1]["a"])
 
-                if use_id:
-                    curr_id = last_id_seen + 1
-                else:
-                    curr_ts = last_ts + 1
+                    if len(data) < 1000:
+                        break
 
-                time.sleep(0.01)
+                dt = pd.to_datetime(curr, unit="ms").strftime("%Y-%m-%d %H:%M")
+                log(f"    >>> Progresso: {dt} | Baleias: {total_whales}")
+
+                curr = next_stop
 
             except Exception as e:
                 log(f"[ERRO] {e}")
