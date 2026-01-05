@@ -178,8 +178,21 @@ def main():
         print(">>> ERRO: Nenhum dado coletado!", flush=True)
         return
     
-    # PROCESSAMENTO FINAL
-    print(">>> Processando arquivo final...", flush=True)
+    # CRIA ZIP IMEDIATAMENTE - antes de processar (evita timeout!)
+    print(">>> Criando ZIP dos dados brutos...", flush=True)
+    if os.path.exists(CSV_PATH):
+        with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(CSV_PATH, arcname="PENDLEUSDT_aggTrades.csv")
+        
+        if os.path.exists(ZIP_PATH):
+            zip_size = os.path.getsize(ZIP_PATH) / (1024 * 1024)
+            print(f">>> ZIP CRIADO: {ZIP_PATH} ({zip_size:.2f} MB)", flush=True)
+            print(">>> ✅ ZIP PRONTO PARA DOWNLOAD!", flush=True)
+        else:
+            print(">>> ERRO: ZIP não foi criado!", flush=True)
+    
+    # PROCESSAMENTO FINAL (opcional - já temos o ZIP)
+    print(">>> Processando arquivo final (limpeza)...", flush=True)
     
     # Lê em chunks (baixa RAM)
     chunks = []
@@ -200,26 +213,18 @@ def main():
     end_ms = int(END_DT.timestamp() * 1000)
     df_final = df_final[(df_final['ts'] >= start_ms) & (df_final['ts'] <= end_ms)]
     
-    # SALVA CSV FINAL
+    # SALVA CSV FINAL (limpo)
     df_final.to_csv(CSV_PATH, index=False)
-    print(f">>> CSV salvo: {CSV_PATH}", flush=True)
+    print(f">>> CSV limpo salvo: {CSV_PATH}", flush=True)
     
     del df_final
     
-    # CRIA ZIP - IGUAL AO ORIGINAL
-    print(">>> Criando ZIP...", flush=True)
+    # Recria ZIP com dados limpos
+    print(">>> Atualizando ZIP com dados limpos...", flush=True)
     with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(CSV_PATH, arcname="PENDLEUSDT_aggTrades.csv")
     
-    # VERIFICA SE CRIOU
-    if os.path.exists(ZIP_PATH):
-        zip_size = os.path.getsize(ZIP_PATH) / (1024 * 1024)
-        print(f">>> ZIP criado: {ZIP_PATH} ({zip_size:.2f} MB)", flush=True)
-        print(">>> ZIP pronto para download!", flush=True)
-    else:
-        print(">>> ERRO: ZIP não foi criado!", flush=True)
-        return
-    
+    print(">>> ZIP atualizado com dados limpos!", flush=True)
     print(">>> FINALIZADO.", flush=True)
     print("=" * 80, flush=True)
     
