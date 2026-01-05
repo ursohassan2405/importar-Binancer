@@ -76,10 +76,23 @@ def download_daily_file(symbol, date, session):
                 print(f"   ⚠️  ZIP vazio")
                 return None
             
-            # Lê o primeiro arquivo CSV (SEM CABEÇALHO)
+            # Lê o primeiro arquivo CSV
             csv_filename = files[0]
             with z.open(csv_filename) as f:
-                df = pd.read_csv(f, header=None)
+                # Tenta ler para detectar se tem cabeçalho
+                df = pd.read_csv(f, header=None, nrows=1)
+                
+                # Se a primeira linha contém 'transact_time', então tem cabeçalho
+                first_row = df.iloc[0]
+                has_header = any('transact_time' in str(val) for val in first_row)
+                
+            # Lê novamente com a configuração correta
+            with z.open(csv_filename) as f:
+                if has_header:
+                    df = pd.read_csv(f, header=0)
+                else:
+                    df = pd.read_csv(f, header=None)
+                
                 print(f"   ✓ {len(df):,} registros")
                 return df
     
@@ -96,25 +109,43 @@ def download_daily_file(symbol, date, session):
 def process_binance_data(df):
     """
     Converte dados do formato Binance para nosso formato
-    CSV Binance (SEM CABEÇALHO): agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker
-    Nosso: ts, price, qty, side
+    CSV Binance pode ter ou não ter cabeçalho:
+    - COM cabeçalho: agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker
+    - SEM cabeçalho: mesma ordem, mas sem linha de cabeçalho
+    Nosso formato: ts, price, qty, side
     """
     if df is None or df.empty:
         return None
     
-    # Os CSVs da Binance NÃO têm cabeçalho, então precisamos nomear as colunas
-    df.columns = ['agg_trade_id', 'price', 'quantity', 'first_trade_id', 
-                  'last_trade_id', 'transact_time', 'is_buyer_maker']
+    # Verifica se já tem os nomes de colunas corretos (CSV com cabeçalho)
+    if 'transact_time' in df.columns:
+        # CSV já tem cabeçalho
+        pass
+    else:
+        # CSV sem cabeçalho - precisa nomear as colunas
+        df.columns = ['agg_trade_id', 'price', 'quantity', 'first_trade_id', 
+                      'last_trade_id', 'transact_time', 'is_buyer_maker']
     
     # Converte is_buyer_maker para nosso formato de side
     # is_buyer_maker = True → comprador é maker → VENDA AGRESSIVA → side = 1
     # is_buyer_maker = False → comprador é taker → COMPRA AGRESSIVA → side = 0
+    
+    # Trata tanto boolean quanto string
+    def convert_side(val):
+        if val is True or val == 'True' or val == 'true' or val == True:
+            return 1
+        else:
+            return 0
+    
     df_processed = pd.DataFrame({
-        'ts': df['transact_time'].astype(int),
-        'price': df['price'].astype(float),
-        'qty': df['quantity'].astype(float),
-        'side': df['is_buyer_maker'].map({True: 1, 'True': 1, False: 0, 'False': 0}).astype(int)
+        'ts': pd.to_numeric(df['transact_time'], errors='coerce').astype('Int64'),
+        'price': pd.to_numeric(df['price'], errors='coerce').astype(float),
+        'qty': pd.to_numeric(df['quantity'], errors='coerce').astype(float),
+        'side': df['is_buyer_maker'].apply(convert_side)
     })
+    
+    # Remove linhas com valores inválidos
+    df_processed = df_processed.dropna()
     
     return df_processed
 
