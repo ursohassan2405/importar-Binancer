@@ -13,6 +13,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 from io import BytesIO
 import random
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import threading
 
 # Força output unbuffered
 sys.stdout.reconfigure(line_buffering=True)
@@ -123,9 +125,41 @@ def process_binance_data(df):
     return df_processed.dropna()
 
 # =========================
+# SERVIDOR HTTP
+# =========================
+class DownloadHandler(SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/download':
+            if os.path.exists(ZIP_PATH):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/zip')
+                self.send_header('Content-Disposition', 'attachment; filename="PENDLEUSDT_aggTrades.zip"')
+                self.end_headers()
+                with open(ZIP_PATH, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_response(404)
+                self.end_headers()
+        else:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.end_headers()
+            self.wfile.write(b'<html><body><h1>PENDLEUSDT</h1><a href="/download">BAIXAR ZIP</a></body></html>')
+
+def start_http_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), DownloadHandler)
+    server.serve_forever()
+
+# =========================
 # MAIN
 # =========================
 def main():
+    # Inicia servidor HTTP
+    http_thread = threading.Thread(target=start_http_server, daemon=True)
+    http_thread.start()
+    time.sleep(1)
+    
     print(">>> Iniciando download completo...", flush=True)
     print(f">>> Período: {START_DT.strftime('%Y-%m-%d')} até {END_DT.strftime('%Y-%m-%d')}", flush=True)
     print(f">>> Destino: {ZIP_PATH}", flush=True)
@@ -187,7 +221,7 @@ def main():
         if os.path.exists(ZIP_PATH):
             zip_size = os.path.getsize(ZIP_PATH) / (1024 * 1024)
             print(f">>> ZIP CRIADO: {ZIP_PATH} ({zip_size:.2f} MB)", flush=True)
-            print(f">>> ZIP pronto para download: {ZIP_PATH}", flush=True)
+            print(f">>> ZIP pronto para download: https://importar-binancer.onrender.com/download", flush=True)
             print(">>> FINALIZADO.", flush=True)
         else:
             print(">>> ERRO: ZIP não foi criado!", flush=True)
