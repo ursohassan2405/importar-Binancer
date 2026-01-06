@@ -187,49 +187,14 @@ def main():
         if os.path.exists(ZIP_PATH):
             zip_size = os.path.getsize(ZIP_PATH) / (1024 * 1024)
             print(f">>> ZIP CRIADO: {ZIP_PATH} ({zip_size:.2f} MB)", flush=True)
-            print(">>> ✅ ZIP PRONTO PARA DOWNLOAD!", flush=True)
+            print(f">>> ZIP pronto para download: {ZIP_PATH}", flush=True)
+            print(">>> FINALIZADO.", flush=True)
         else:
             print(">>> ERRO: ZIP não foi criado!", flush=True)
+            return
     
-    # PROCESSAMENTO FINAL (opcional - já temos o ZIP)
-    print(">>> Processando arquivo final (limpeza)...", flush=True)
-    
-    # Lê em chunks (baixa RAM)
-    chunks = []
-    for chunk in pd.read_csv(CSV_PATH, chunksize=100000):
-        chunks.append(chunk)
-    
-    df_final = pd.concat(chunks, ignore_index=True)
-    del chunks
-    
-    print(f">>> Total de registros: {len(df_final):,}", flush=True)
-    
-    # Limpa duplicatas
-    df_final = df_final.drop_duplicates(subset=['ts'], keep='first')
-    df_final = df_final.sort_values('ts').reset_index(drop=True)
-    
-    # Filtra período exato
-    start_ms = int(START_DT.timestamp() * 1000)
-    end_ms = int(END_DT.timestamp() * 1000)
-    df_final = df_final[(df_final['ts'] >= start_ms) & (df_final['ts'] <= end_ms)]
-    
-    # SALVA CSV FINAL (limpo)
-    df_final.to_csv(CSV_PATH, index=False)
-    print(f">>> CSV limpo salvo: {CSV_PATH}", flush=True)
-    
-    del df_final
-    
-    # Recria ZIP com dados limpos
-    print(">>> Atualizando ZIP com dados limpos...", flush=True)
-    with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(CSV_PATH, arcname="PENDLEUSDT_aggTrades.csv")
-    
-    print(">>> ZIP atualizado com dados limpos!", flush=True)
-    print(">>> FINALIZADO.", flush=True)
-    print("=" * 80, flush=True)
-    
-    # MANTÉM VIVO (não reinicia)
-    print(">>> Serviço mantido ativo para download...", flush=True)
+    # ENCERRA AQUI - mantém serviço vivo para não perder o arquivo
+    print(">>> Serviço mantido ativo...", flush=True)
     while True:
         time.sleep(3600)
 
