@@ -357,7 +357,8 @@ def main():
         print(">>> ✅ ZIP 15m PRONTO PARA DOWNLOAD!", flush=True)
     else:
         print(">>> ERRO: ZIP 15m não foi criado!", flush=True)
-        return
+
+    return
     
     # PROCESSAMENTO FINAL (opcional - já temos o ZIP)
     # Se estourar memória aqui, tudo bem - o ZIP já foi criado!
