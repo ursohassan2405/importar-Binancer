@@ -351,20 +351,23 @@ def main():
     with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(CSV_15M_PATH, arcname="PENDLEUSDT_15m.csv")
 
-    if os.path.exists(ZIP_PATH):
-        zip_size = os.path.getsize(ZIP_PATH) / (1024 * 1024)
-        print(f">>> ZIP CRIADO: {ZIP_PATH} ({zip_size:.2f} MB)", flush=True)
-        print(">>> ✅ ZIP 15m PRONTO PARA DOWNLOAD!", flush=True)
+    if not os.path.exists(ZIP_PATH):
+        print(">>> ERRO: ZIP 15m não foi criado!", flush=True)
+        return
+
+    zip_size = os.path.getsize(ZIP_PATH) / (1024 * 1024)
+    print(f">>> ZIP CRIADO: {ZIP_PATH} ({zip_size:.2f} MB)", flush=True)
+    print(">>> ✅ ZIP 15m PRONTO!", flush=True)
 
     print(">>> Enviando ZIP para CatBox...", flush=True)
     try:
         link = upload_catbox(ZIP_PATH)
         print(">>> LINK FINAL PARA DOWNLOAD:", flush=True)
         print(link, flush=True)
+        return
     except Exception as e:
         print(f">>> ERRO AO ENVIAR PARA CATBOX: {e}", flush=True)
-
-        print(">>> Serviço mantido ativo para download...", flush=True)
+        print(">>> Serviço mantido ativo...", flush=True)
         while True:
             time.sleep(3600)
 
