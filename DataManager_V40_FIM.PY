@@ -355,6 +355,11 @@ def main():
         zip_size = os.path.getsize(ZIP_PATH) / (1024 * 1024)
         print(f">>> ZIP CRIADO: {ZIP_PATH} ({zip_size:.2f} MB)", flush=True)
         print(">>> ✅ ZIP 15m PRONTO PARA DOWNLOAD!", flush=True)
+        print(">>> Serviço mantido ativo para download...", flush=True)
+        while True:
+            time.sleep(3600)
+
+
     else:
         print(">>> ERRO: ZIP 15m não foi criado!", flush=True)
 
