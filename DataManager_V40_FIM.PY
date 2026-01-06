@@ -355,6 +355,15 @@ def main():
         zip_size = os.path.getsize(ZIP_PATH) / (1024 * 1024)
         print(f">>> ZIP CRIADO: {ZIP_PATH} ({zip_size:.2f} MB)", flush=True)
         print(">>> ✅ ZIP 15m PRONTO PARA DOWNLOAD!", flush=True)
+
+    print(">>> Enviando ZIP para CatBox...", flush=True)
+    try:
+        link = upload_catbox(ZIP_PATH)
+        print(">>> LINK FINAL PARA DOWNLOAD:", flush=True)
+        print(link, flush=True)
+    except Exception as e:
+        print(f">>> ERRO AO ENVIAR PARA CATBOX: {e}", flush=True)
+
         print(">>> Serviço mantido ativo para download...", flush=True)
         while True:
             time.sleep(3600)
@@ -423,6 +432,21 @@ def main():
     print(">>> Serviço mantido ativo para download...", flush=True)
     while True:
         time.sleep(3600)
+
+import requests
+
+def upload_catbox(filepath):
+    url = "https://catbox.moe/user/api.php"
+    with open(filepath, "rb") as f:
+        r = requests.post(
+            url,
+            data={"reqtype": "fileupload"},
+            files={"fileToUpload": f},
+            timeout=300
+        )
+    r.raise_for_status()
+    return r.text.strip()
+
 
 if __name__ == "__main__":
     main()
