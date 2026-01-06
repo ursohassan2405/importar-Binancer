@@ -233,7 +233,21 @@ def gerar_15m_tratado_incremental(csv_agg_path, csv_15m_path, timeframe_min=15, 
         "buy_vol", "sell_vol", "delta"
     ])
 
-    df_15m.to_csv(csv_15m_path, index=False)
+        # ============================================================
+        # SALVA CSV FINAL — CONTRATO V1 + AGRESSÃO 1m REAL
+        # ============================================================
+
+        COLUNAS_V1 = [
+            "ts",
+            "open", "high", "low", "close",
+            "volume", "quote_volume", "trades",
+            "taker_buy_base", "taker_sell_base",
+            "total_vol_agg",
+            "delta", "cum_delta"
+        ]
+
+        df_15m[COLUNAS_V1].to_csv(CSV_PATH, index=False)
+        print(f">>> CSV 15m institucional (V1 compatível) salvo: {CSV_PATH}", flush=True)
     print(f">>> 15m tratado gerado: {csv_15m_path}", flush=True)
 
 
@@ -418,6 +432,35 @@ def main():
             trades_np,
             timeframe="1m"
         )
+
+
+        # ============================================================
+        # COMPATIBILIDADE TOTAL COM V1 (MESMO CONTRATO DE SAÍDA)
+        # ============================================================
+
+        # Aliases de agressão (conteúdo NOVO, nome LEGADO)
+        if "buy_vol_agg" in df_15m.columns:
+            df_15m["taker_buy_base"] = df_15m["buy_vol_agg"]
+        else:
+            df_15m["taker_buy_base"] = 0.0
+
+        if "sell_vol_agg" in df_15m.columns:
+            df_15m["taker_sell_base"] = df_15m["sell_vol_agg"]
+        else:
+            df_15m["taker_sell_base"] = 0.0
+
+        # Volume total agressivo
+        df_15m["total_vol_agg"] = df_15m["taker_buy_base"] + df_15m["taker_sell_base"]
+
+        # Quote volume (igual V1)
+        df_15m["quote_volume"] = df_15m["volume"] * df_15m["close"]
+
+        # Trades (se não existir, mantém compatível)
+        if "trades" not in df_15m.columns:
+            df_15m["trades"] = 0
+
+        # Close time (padrão Binance)
+        df_15m["close_time"] = df_15m["ts"] + (15 * 60 * 1000) - 1
 
         # 3) Resample institucional 1m → 15m (preserva TODAS as colunas)
         df_15m = smart_resample(df_1m, "15m")
