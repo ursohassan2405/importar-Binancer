@@ -227,11 +227,67 @@ def gerar_15m_tratado_incremental(csv_agg_path, csv_15m_path, timeframe_min=15, 
             st["sell_vol"],
             st["buy_vol"] - st["sell_vol"],
         ])
+    df_15m = pd.DataFrame(rows, columns=[
+        "ts", "open", "high", "low", "close",
+        "volume", "buy_vol", "sell_vol", "delta"
+    ])
 
-df_15m = pd.DataFrame(rows, columns=[
-    "ts", "open", "high", "low", "close", "volume",
-    "buy_vol", "sell_vol", "delta"
-])
+    # ============================
+    # CORREÇÃO + SANEAMENTO (PADRÃO ELITE)
+    # ============================
+
+    df_15m["taker_buy_base"]  = df_15m["buy_vol"]
+    df_15m["taker_sell_base"] = df_15m["sell_vol"]
+    df_15m["total_vol_agg"]   = df_15m["buy_vol"] - df_15m["sell_vol"]
+
+    df_15m["quote_volume"] = df_15m["volume"] * df_15m["close"]
+    df_15m["trades"] = 0
+    df_15m["close_time"] = df_15m["ts"] + (timeframe_min * 60 * 1000) - 1
+
+    # saneamento numérico
+    for c in [
+        "open","high","low","close",
+        "volume","quote_volume",
+        "taker_buy_base","taker_sell_base",
+        "total_vol_agg","delta"
+    ]:
+        df_15m[c] = pd.to_numeric(df_15m[c], errors="coerce").fillna(0.0)
+
+    df_15m["ts"] = pd.to_numeric(df_15m["ts"], errors="coerce").fillna(0).astype("int64")
+
+    df_15m = df_15m.sort_values("ts").reset_index(drop=True)
+
+    df_15m.to_csv(csv_15m_path, index=False)
+
+    print(f">>> 15m tratado gerado: {csv_15m_path}", flush=True)
+
+# ============================================================
+# SAÍDA FINAL — CONTRATO V1 + AGRESSÃO 1m REAL
+# ============================================================
+
+df_15m["taker_buy_base"]  = df_15m.get("buy_vol_agg", 0.0)
+df_15m["taker_sell_base"] = df_15m.get("sell_vol_agg", 0.0)
+df_15m["total_vol_agg"]   = df_15m["taker_buy_base"] + df_15m["taker_sell_base"]
+
+df_15m["quote_volume"] = df_15m["volume"] * df_15m["close"]
+df_15m["trades"]       = df_15m.get("trades", 0)
+df_15m["close_time"]   = df_15m["ts"] + (15 * 60 * 1000) - 1
+
+assert_schema_v1(df_15m)
+
+COLUNAS_V1 = [
+    "ts",
+    "open","high","low","close",
+    "volume","quote_volume","trades",
+    "taker_buy_base","taker_sell_base",
+    "total_vol_agg",
+    "delta","cum_delta"
+]
+
+df_15m[COLUNAS_V1].to_csv(CSV_PATH, index=False)
+
+print(f">>> CSV 15m institucional salvo: {CSV_PATH}", flush=True)
+
 
 # ============================================================
 # SAÍDA FINAL — CONTRATO V1 + AGRESSÃO 1m REAL
