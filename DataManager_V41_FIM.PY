@@ -228,40 +228,40 @@ def gerar_15m_tratado_incremental(csv_agg_path, csv_15m_path, timeframe_min=15, 
             st["buy_vol"] - st["sell_vol"],
         ])
 
-    df_15m = pd.DataFrame(rows, columns=[
-        "ts", "open", "high", "low", "close", "volume",
-        "buy_vol", "sell_vol", "delta"
-    ])
+df_15m = pd.DataFrame(rows, columns=[
+    "ts", "open", "high", "low", "close", "volume",
+    "buy_vol", "sell_vol", "delta"
+])
 
-        # ============================================================
-        # SAÍDA FINAL — CONTRATO V1 + AGRESSÃO 1m REAL
-        # ============================================================
+# ============================================================
+# SAÍDA FINAL — CONTRATO V1 + AGRESSÃO 1m REAL
+# ============================================================
 
-        # Aliases (conteúdo novo, nomes do V1)
-        df_15m["taker_buy_base"]  = df_15m.get("buy_vol_agg", 0.0)
-        df_15m["taker_sell_base"] = df_15m.get("sell_vol_agg", 0.0)
-        df_15m["total_vol_agg"]   = df_15m["taker_buy_base"] + df_15m["taker_sell_base"]
+# Aliases (conteúdo novo, nomes do V1)
+df_15m["taker_buy_base"]  = df_15m.get("buy_vol_agg", 0.0)
+df_15m["taker_sell_base"] = df_15m.get("sell_vol_agg", 0.0)
+df_15m["total_vol_agg"]   = df_15m["taker_buy_base"] + df_15m["taker_sell_base"]
 
-        # Campos do V1
-        df_15m["quote_volume"] = df_15m["volume"] * df_15m["close"]
-        df_15m["trades"]       = df_15m.get("trades", 0)
-        df_15m["close_time"]   = df_15m["ts"] + (15 * 60 * 1000) - 1
+# Campos do V1
+df_15m["quote_volume"] = df_15m["volume"] * df_15m["close"]
+df_15m["trades"]       = df_15m.get("trades", 0)
+df_15m["close_time"]   = df_15m["ts"] + (15 * 60 * 1000) - 1
 
-        # Blindagem
-        assert_schema_v1(df_15m)
+assert_schema_v1(df_15m)
 
-        # Ordem/contrato do V1
-        COLUNAS_V1 = [
-            "ts",
-            "open","high","low","close",
-            "volume","quote_volume","trades",
-            "taker_buy_base","taker_sell_base",
-            "total_vol_agg",
-            "delta","cum_delta"
-        ]
+COLUNAS_V1 = [
+    "ts",
+    "open","high","low","close",
+    "volume","quote_volume","trades",
+    "taker_buy_base","taker_sell_base",
+    "total_vol_agg",
+    "delta","cum_delta"
+]
 
-        df_15m[COLUNAS_V1].to_csv(CSV_PATH, index=False)
-    print(f">>> 15m tratado gerado: {csv_15m_path}", flush=True)
+df_15m[COLUNAS_V1].to_csv(CSV_PATH, index=False)
+
+print(f">>> CSV 15m institucional salvo: {CSV_PATH}", flush=True)
+
 
 
 # =========================
