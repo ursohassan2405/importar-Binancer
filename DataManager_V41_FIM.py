@@ -229,12 +229,42 @@ def gerar_15m_tratado_incremental(csv_agg_path, csv_15m_path, timeframe_min=15, 
         ])
 
     df_15m = pd.DataFrame(rows, columns=[
-        "ts", "open", "high", "low", "close", "volume",
-        "buy_vol", "sell_vol", "delta"
+        "ts", "open", "high", "low", "close",
+        "volume", "buy_vol", "sell_vol", "delta"
     ])
 
+    # ============================================================
+    # ENRIQUECIMENTO V1 — BLOCO ISOLADO (SEGURO)
+    # ============================================================
+
+    df_15m["buy_vol_agg"]  = df_15m["buy_vol"]
+    df_15m["sell_vol_agg"] = df_15m["sell_vol"]
+    df_15m["total_vol_agg"] = df_15m["buy_vol"] + df_15m["sell_vol"]
+
+    df_15m["taker_buy_base"]  = df_15m["buy_vol"]
+    df_15m["taker_sell_base"] = df_15m["sell_vol"]
+    df_15m["taker_buy_quote"] = df_15m["taker_buy_base"] * df_15m["close"]
+
+    df_15m["quote_volume"] = df_15m["volume"] * df_15m["close"]
+    df_15m["trades"] = 0
+    df_15m["close_time"] = df_15m["ts"] + (timeframe_min * 60 * 1000) - 1
+
+    df_15m["cum_delta"] = df_15m["delta"].cumsum()
+
+    df_15m["price_range"] = df_15m["high"] - df_15m["low"]
+
+    df_15m["absorcao"] = df_15m["delta"] / (
+        df_15m["price_range"].replace(0, 1e-9)
+    )
+
+    df_15m["vpin"] = (
+        (df_15m["buy_vol"] - df_15m["sell_vol"]).abs() /
+        (df_15m["total_vol_agg"].replace(0, 1e-9))
+    )
+
+    # SALVA CSV FINAL 15M (COMPLETO, V1 + MELHOR)
     df_15m.to_csv(csv_15m_path, index=False)
-    print(f">>> 15m tratado gerado: {csv_15m_path}", flush=True)
+    print(f">>> 15m tratado + enriquecido salvo: {csv_15m_path}", flush=True)
 
 
 # =========================
