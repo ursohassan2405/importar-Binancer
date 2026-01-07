@@ -1,3 +1,5 @@
+print("### DATA MANAGER V41 FIM — VERSÃO NOVA CARREGADA ###", flush=True)
+
 # ============================================================
 # DataManager_V39_FINAL.py
 # PENDLEUSDT – Binance Data Vision
