@@ -262,8 +262,6 @@ def gerar_15m_tratado_incremental(csv_agg_path, csv_15m_path, timeframe_min=15, 
         (df_15m["total_vol_agg"].replace(0, 1e-9))
     )
 
-    # SALVA CSV FINAL 15M (COMPLETO, V1 + MELHOR)
-    df_15m.to_csv(csv_15m_path, index=False)
     print(f">>> 15m tratado + enriquecido salvo: {csv_15m_path}", flush=True)
 
 
