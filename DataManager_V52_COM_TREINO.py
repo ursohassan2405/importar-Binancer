@@ -267,15 +267,25 @@ def detectar_regimes_mercado_v25(df, n_regimes=4, out_dir=OUT_DIR):
     """
     print(">>> Detectando regimes de mercado...", flush=True)
     
-    # Features de regime (MESMAS DO V27!)
-    regime_features = [c for c in ['vol_realized', 'atr14', 'slope20'] 
-                      if c in df.columns]
+    # ⚠️ CRÍTICO: Features de regime DEVEM ser exatamente estas 3
+    # (compatibilidade com V27 local campeão)
+    REGIME_FEATURES_OBRIGATORIAS = ['vol_realized', 'atr14', 'slope20']
     
-    if not regime_features:
-        df['temp_ret'] = df['close'].pct_change(20)
-        regime_features = ['temp_ret']
+    regime_features = [c for c in REGIME_FEATURES_OBRIGATORIAS if c in df.columns]
     
-    print(f"    Features de regime: {regime_features}", flush=True)
+    # Validação crítica
+    if len(regime_features) != 3:
+        print(f"    ⚠️ AVISO: Apenas {len(regime_features)}/3 features encontradas!", flush=True)
+        print(f"    Features disponíveis: {regime_features}", flush=True)
+        print(f"    Features faltando: {set(REGIME_FEATURES_OBRIGATORIAS) - set(regime_features)}", flush=True)
+        
+        # Fallback (NÃO DEVE ACONTECER!)
+        if not regime_features:
+            df['temp_ret'] = df['close'].pct_change(20)
+            regime_features = ['temp_ret']
+            print("    🚨 USANDO FALLBACK: temp_ret", flush=True)
+    else:
+        print(f"    ✅ Features de regime: {regime_features}", flush=True)
     
     # Preparar matriz
     X_regime = df[regime_features].fillna(0).values
@@ -283,6 +293,10 @@ def detectar_regimes_mercado_v25(df, n_regimes=4, out_dir=OUT_DIR):
     # Criar e treinar Scaler
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_regime)
+    
+    # ⭐ DEBUG: Print das médias do scaler (comparar com local)
+    print(f"    📊 MÉDIAS DO SCALER NA RENDER: {scaler.mean_}", flush=True)
+    print(f"    📊 DESVIOS DO SCALER NA RENDER: {scaler.scale_}", flush=True)
     
     # Aplicar KMeans
     kmeans = KMeans(n_clusters=n_regimes, random_state=42, n_init=10)
@@ -325,13 +339,13 @@ def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
     print(f"    Target criado: {CANDLES_FUTURO} candles à frente", flush=True)
     print(f"    Distribuição: {df_15m['target_K6_bin'].value_counts().to_dict()}", flush=True)
     
-    # 2. CALCULAR FEATURES
+    # 2. CALCULAR FEATURES (ANTES DE DROPNA!)
     print(">>> Calculando features...", flush=True)
     df_15m = feature_engine(df_15m)
     df_15m = adicionar_features_avancadas(df_15m)
     print(f"    ✅ {len(df_15m.columns)} colunas totais", flush=True)
     
-    # 3. DETECTAR REGIMES
+    # 3. DETECTAR REGIMES (ANTES DE DROPNA!)
     df_15m, scaler, kmeans = detectar_regimes_mercado_v25(df_15m, n_regimes=4, out_dir=out_dir)
     
     # 4. PREPARAR MATRIZ X, y
@@ -359,10 +373,13 @@ def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
     
     y = df_15m['target_K6_bin'].values
     
-    # Remover NaN
+    # ⚠️ CRÍTICO: Remover NaN SOMENTE DEPOIS de criar TODAS as features
+    # (Se dropar antes, a "janela de memória" fica torta!)
+    print(f"    Shape antes de remover NaN: X={X.shape}, y={y.shape}", flush=True)
     valid_mask = ~(X.isna().any(axis=1) | pd.isna(y))
     X = X[valid_mask]
     y = y[valid_mask]
+    print(f"    Shape depois de remover NaN: X={X.shape}, y={y.shape}", flush=True)
     
     print(f"    ✅ X: {X.shape}", flush=True)
     print(f"    ✅ y: {y.shape}", flush=True)
@@ -382,6 +399,7 @@ def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
     
     # 6. TREINAR XGBOOST
     print(">>> Treinando XGBoost...", flush=True)
+    print("    ⚠️ Peso temporal = 1 (todas as amostras têm peso igual)", flush=True)
     
     modelo = xgb.XGBClassifier(
         n_estimators=500,
@@ -394,6 +412,7 @@ def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
         eval_metric='logloss'
     )
     
+    # ⚠️ CRÍTICO: SEM sample_weight (peso temporal = 1)
     modelo.fit(
         X_train, 
         y_train,
@@ -651,6 +670,22 @@ def main():
     print(f"    ✅ {pkl_modelo}", flush=True)
     print(f"    ✅ {pkl_scaler}", flush=True)
     print(f"    ✅ {pkl_kmeans}", flush=True)
+    
+    # ⭐ VALIDAÇÃO CRÍTICA: Recarregar PKLs para confirmar integridade
+    print("\n    🔍 VALIDANDO INTEGRIDADE DOS PKLs...", flush=True)
+    try:
+        modelo_teste = joblib.load(pkl_modelo)
+        scaler_teste = joblib.load(pkl_scaler)
+        kmeans_teste = joblib.load(pkl_kmeans)
+        
+        print(f"    ✅ Modelo: {type(modelo_teste).__name__}", flush=True)
+        print(f"    ✅ Scaler: {scaler_teste.n_features_in_} features", flush=True)
+        print(f"    ✅ Scaler médias: {scaler_teste.mean_}", flush=True)
+        print(f"    ✅ KMeans: {kmeans_teste.n_clusters} clusters", flush=True)
+        print("    ✅ VALIDAÇÃO OK!", flush=True)
+    except Exception as e:
+        print(f"    🚨 ERRO NA VALIDAÇÃO: {e}", flush=True)
+        print("    ⚠️ PKLs podem estar corrompidos!", flush=True)
     
     # Salvar lista de features também
     features_path = os.path.join(OUT_DIR, "feature_names.txt")
