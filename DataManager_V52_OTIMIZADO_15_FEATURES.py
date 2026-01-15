@@ -9,10 +9,10 @@
 # - adicionar_features_avancadas() DESABILITADA (retorna imediatamente)
 #
 # MODIFICAÇÕES V52:
-# 1. COMENTADO: Download da Binance (para teste)
-# 2. ADICIONADO: Treino V27 completo
-# 3. ADICIONADO: Download de PKLs
-# 4. OTIMIZADO: Apenas 15 features base (menos overfitting)
+# 1. ✅ ADICIONADO: Download automático da Binance (se CSV não existir)
+# 2. ✅ ADICIONADO: Treino V27 completo
+# 3. ✅ ADICIONADO: Download de PKLs
+# 4. ✅ OTIMIZADO: Apenas 15 features base (menos overfitting)
 # 5. Parâmetros fixos: candles=5, multiframe, peso_temporal=1
 # ============================================================
 
@@ -117,11 +117,19 @@ def feature_engine(df: pd.DataFrame) -> pd.DataFrame:
     df["dist_ema9"] = (df["close"].shift(1) - df["ema9"])
     df["dist_ema20"] = (df["close"].shift(1) - df["ema20"])
 
-    # 4. SLOPES E VOLATILIDADES
+    # 4. SLOPES, VOLATILIDADES E ATR
     df["slope20"] = slope_regression(df["close"].values, 20)
     df["slope50"] = slope_regression(df["close"].values, 50)
     df["vol_realized"] = realized_vol(df["close"])
     df["vol_yz"] = yang_zhang(df)
+    
+    # ⚠️ CRÍTICO: ATR14 é necessário para regimes!
+    tr = pd.concat([
+        (df["high"] - df["low"]),
+        (df["high"] - df["close"].shift(1)).abs(),
+        (df["low"] - df["close"].shift(1)).abs()
+    ], axis=1).max(axis=1)
+    df["atr14"] = tr.rolling(14).mean().shift(1)
 
     # 5. AGRESSÃO
     if "taker_buy_base" in df.columns:
@@ -187,7 +195,7 @@ def detectar_regimes_mercado_v25(df, n_regimes=4, out_dir=OUT_DIR):
         print(f"    Features disponíveis: {regime_features}", flush=True)
         print(f"    Features faltando: {set(REGIME_FEATURES_OBRIGATORIAS) - set(regime_features)}", flush=True)
         
-        # Fallback (NAO DEVE ACONTECER!)
+        # Fallback (NÃO DEVE ACONTECER!)
         if not regime_features:
             df['temp_ret'] = df['close'].pct_change(20)
             regime_features = ['temp_ret']
@@ -241,6 +249,15 @@ def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
     print("   - Estratégia: Less is More (menos overfitting)", flush=True)
     print("="*70, flush=True)
     
+    # 0. NORMALIZAR NOME DA COLUNA DE TIMESTAMP
+    if 'open_time' in df_15m.columns and 'ts' not in df_15m.columns:
+        df_15m.rename(columns={'open_time': 'ts'}, inplace=True)
+        print("    ✅ Renomeado 'open_time' → 'ts'", flush=True)
+    
+    # Garantir que 'ts' existe
+    if 'ts' not in df_15m.columns:
+        raise ValueError("CSV sem coluna de timestamp (ts ou open_time)")
+    
     # 1. CRIAR TARGETS (K6)
     print(">>> Criando targets K6...", flush=True)
     
@@ -255,23 +272,29 @@ def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
     
     # 2. CALCULAR FEATURES (ANTES DE DROPNA!)
     print(">>> Calculando features...", flush=True)
+    t_start = time.time()
     df_15m = feature_engine(df_15m)
     df_15m = adicionar_features_avancadas(df_15m)
-    print(f"    ✅ {len(df_15m.columns)} colunas totais", flush=True)
+    print(f"    ✅ {len(df_15m.columns)} colunas totais ({time.time()-t_start:.1f}s)", flush=True)
     
     # 3. DETECTAR REGIMES (ANTES DE DROPNA!)
+    t_start = time.time()
     df_15m, scaler, kmeans = detectar_regimes_mercado_v25(df_15m, n_regimes=4, out_dir=out_dir)
+    print(f"    ✅ Regimes detectados ({time.time()-t_start:.1f}s)", flush=True)
     
     # 4. PREPARAR MATRIZ X, y
     print(">>> Preparando matriz de treino...", flush=True)
     
-    # Remover colunas nao-feature
+    # Remover colunas não-feature
     non_feat = {
         "open", "high", "low", "close", "volume",
         "ts", "quote_volume", "trades",
-        "taker_buy_base", "taker_buy_quote", "close_time", "ignore",
+        "taker_buy_base", "taker_buy_quote", "taker_sell_base", "close_time", "ignore", "open_time",
         "mark_price", "index_price", "fundingRate",
-        "target_K6", "target_K6_bin"
+        "target_K6", "target_K6_bin",
+        # Colunas do V51 (baleias)
+        "buy_vol", "sell_vol", "delta", "buy_vol_agg", "sell_vol_agg", 
+        "total_vol_agg", "cum_delta", "price_range", "absorcao", "vpin"
     }
     
     # Remover targets
@@ -311,10 +334,39 @@ def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
     print(f"    Train: {len(X_train)} samples", flush=True)
     print(f"    Test:  {len(X_test)} samples", flush=True)
     
-    # 6. TREINAR XGBOOST
-    print(">>> Treinando XGBoost...", flush=True)
-    print("    ⚠️ Peso temporal = 1 (todas as amostras têm peso igual)", flush=True)
+    # 6. CALCULAR PESO TEMPORAL (BASEADO EM REGIME)
+    print(">>> Calculando peso temporal...", flush=True)
     
+    # Pesos por regime (C2 do V27)
+    regime_col = 'market_regime'
+    if regime_col not in df_15m.columns:
+        print("    ⚠️  Coluna 'market_regime' não encontrada! Usando peso uniforme.", flush=True)
+        sample_weight_train = None
+    else:
+        # Peso baseado em regime (aplicado apenas no treino)
+        regime_train = df_15m.loc[X_train.index, regime_col].values
+        
+        # Calcular frequência de cada regime no treino
+        regime_counts = pd.Series(regime_train).value_counts()
+        total_samples = len(regime_train)
+        
+        # Peso inversamente proporcional à frequência
+        # Regimes raros recebem mais peso
+        regime_weights = {}
+        for regime_id, count in regime_counts.items():
+            regime_weights[regime_id] = total_samples / (len(regime_counts) * count)
+        
+        # Mapear pesos para cada amostra
+        sample_weight_train = np.array([regime_weights[r] for r in regime_train])
+        
+        print(f"    ✅ Peso temporal calculado", flush=True)
+        print(f"    Regimes no treino: {dict(regime_counts)}", flush=True)
+        print(f"    Pesos por regime: {regime_weights}", flush=True)
+    
+    # 7. TREINAR XGBOOST
+    print(">>> Treinando XGBoost...", flush=True)
+    
+    t_start = time.time()
     modelo = xgb.XGBClassifier(
         n_estimators=500,
         max_depth=6,
@@ -326,17 +378,28 @@ def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
         eval_metric='logloss'
     )
     
-    # ⚠️ CRÍTICO: SEM sample_weight (peso temporal = 1)
-    modelo.fit(
-        X_train, 
-        y_train,
-        eval_set=[(X_test, y_test)],
-        verbose=False
-    )
+    # ⚠️ CRÍTICO: COM sample_weight baseado em regime
+    if sample_weight_train is not None:
+        print("    ⚠️ Peso temporal ATIVADO (baseado em regime)", flush=True)
+        modelo.fit(
+            X_train, 
+            y_train,
+            sample_weight=sample_weight_train,
+            eval_set=[(X_test, y_test)],
+            verbose=False
+        )
+    else:
+        print("    ⚠️ Peso temporal DESATIVADO (peso uniforme)", flush=True)
+        modelo.fit(
+            X_train, 
+            y_train,
+            eval_set=[(X_test, y_test)],
+            verbose=False
+        )
     
-    print("    ✅ Modelo treinado!", flush=True)
+    print(f"    ✅ Modelo treinado em {time.time()-t_start:.1f}s!", flush=True)
     
-    # 7. AVALIAR
+    # 8. AVALIAR
     from sklearn.metrics import accuracy_score, classification_report
     
     y_pred = modelo.predict(X_test)
@@ -387,86 +450,38 @@ def gerar_15m_tratado_incremental(csv_agg_path, csv_15m_path, timeframe_min=15, 
 """
 
 # ============================================================
-# ⭐ NOVA FUNÇÃO: GERAR MULTIFRAME (30m, 1h, 4h, 8h, 1d)
+# ⭐ CSVs JÁ FORAM GERADOS PELO V51
 # ============================================================
-
-def gerar_multiframe(csv_15m_path, out_dir=OUT_DIR):
-    """
-    Gera CSVs de timeframes maiores a partir do 15m.
-    
-    Retorna dicionário com caminhos dos CSVs.
-    """
-    print("\n>>> Gerando timeframes multiframe...", flush=True)
-    
-    # Ler 15m
-    df_15m = pd.read_csv(csv_15m_path)
-    df_15m['ts'] = pd.to_datetime(df_15m['ts'], unit='ms')
-    df_15m.set_index('ts', inplace=True)
-    
-    timeframes = {
-        '30m': '30T',
-        '1h': '1H',
-        '4h': '4H',
-        '8h': '8H',
-        '1d': '1D'
-    }
-    
-    csv_paths = {'15m': csv_15m_path}
-    
-    for tf_name, tf_rule in timeframes.items():
-        print(f"    Gerando {tf_name}...", flush=True)
-        
-        df_resampled = df_15m.resample(tf_rule).agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last',
-            'volume': 'sum'
-        }).dropna()
-        
-        # Salvar
-        csv_path = os.path.join(out_dir, f"{SYMBOL}_{tf_name}.csv")
-        df_resampled.to_csv(csv_path)
-        csv_paths[tf_name] = csv_path
-        
-        print(f"        ✅ {len(df_resampled)} candles → {csv_path}", flush=True)
-    
-    return csv_paths
+# O V51 já gerou todos os CSVs de timeframes no Render:
+# - PENDLEUSDT_15m.csv
+# - PENDLEUSDT_30m.csv  
+# - PENDLEUSDT_1h.csv
+# - PENDLEUSDT_4h.csv
+# - PENDLEUSDT_8h.csv
+# - PENDLEUSDT_1d.csv
+#
+# Não precisamos gerar novamente - apenas ler!
+# ============================================================
 
 # ============================================================
 # SERVIDOR HTTP (DOWNLOAD)
 # ============================================================
 
 class DownloadHandler(SimpleHTTPRequestHandler):
-# No DataManager_V52_OTIMIZADO_15_FEATURES.py, localize a classe SimpleHTTPRequestHandler
-# Garanta que o self.wfile.write esteja exatamente assim:
-
     def do_GET(self):
-        if self.path == '/download_csv':
+        if self.path == '/download/csvs':
             if os.path.exists(ZIP_CSV_PATH):
                 self.send_response(200)
-                self.send_header('Content-type', 'application/zip')
-                self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(ZIP_CSV_PATH)}"')
+                self.send_header('Content-Type', 'application/zip')
+                self.send_header('Content-Disposition', f'attachment; filename="{SYMBOL}_csvs.zip"')
                 self.end_headers()
                 with open(ZIP_CSV_PATH, 'rb') as f:
                     self.wfile.write(f.read())
             else:
                 self.send_response(404)
                 self.end_headers()
-                self.wfile.write(b'ZIP CSVs ainda nao criado') # <--- LINHA 453 CORRIGIDA
-
-        elif self.path == '/download_pkl':
-            if os.path.exists(ZIP_PKL_PATH):
-                self.send_response(200)
-                self.send_header('Content-type', 'application/zip')
-                self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(ZIP_PKL_PATH)}"')
-                self.end_headers()
-                with open(ZIP_PKL_PATH, 'rb') as f:
-                    self.wfile.write(f.read())
-            else:
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(b'ZIP PKLs ainda nao criado')        
+                self.wfile.write(b'ZIP CSVs not created yet')
+        
         elif self.path == '/download/pkls':
             if os.path.exists(ZIP_PKL_PATH):
                 self.send_response(200)
@@ -478,7 +493,7 @@ class DownloadHandler(SimpleHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
-                self.wfile.write(b'ZIP PKLs ainda nao criado')
+                self.wfile.write(b'ZIP PKLs not created yet')
         
         else:
             self.send_response(200)
@@ -513,6 +528,92 @@ def start_http_server():
     server.serve_forever()
 
 # ============================================================
+# ⭐ FUNÇÃO AUXILIAR: DOWNLOAD DA BINANCE
+# ============================================================
+
+def baixar_dados_binance(symbol, start_date, end_date, output_path):
+    """
+    Baixa dados da Binance Data Vision.
+    
+    Args:
+        symbol: Par (ex: PENDLEUSDT)
+        start_date: Data início (datetime)
+        end_date: Data fim (datetime)
+        output_path: Onde salvar CSV
+    """
+    import requests
+    from io import BytesIO
+    
+    print(f"\n>>> Baixando {symbol} da Binance Data Vision...", flush=True)
+    
+    # Iterar por cada mês
+    current = start_date.replace(day=1)
+    all_dfs = []
+    
+    while current <= end_date:
+        year = current.year
+        month = current.month
+        
+        # URL da Binance Data Vision
+        url = f"https://data.binance.vision/data/spot/monthly/klines/{symbol}/15m/{symbol}-15m-{year}-{month:02d}.zip"
+        
+        print(f"    Baixando: {year}-{month:02d}...", flush=True)
+        
+        try:
+            response = requests.get(url, timeout=30)
+            
+            if response.status_code == 200:
+                # Extrair ZIP
+                with zipfile.ZipFile(BytesIO(response.content)) as z:
+                    csv_name = z.namelist()[0]
+                    with z.open(csv_name) as f:
+                        df_month = pd.read_csv(f, header=None)
+                        all_dfs.append(df_month)
+                        print(f"        ✅ {len(df_month)} candles", flush=True)
+            else:
+                print(f"        ⚠️  Não encontrado (status {response.status_code})", flush=True)
+        
+        except Exception as e:
+            print(f"        ❌ Erro: {e}", flush=True)
+        
+        # Próximo mês
+        if month == 12:
+            current = current.replace(year=year+1, month=1)
+        else:
+            current = current.replace(month=month+1)
+    
+    if not all_dfs:
+        raise Exception("Nenhum dado foi baixado!")
+    
+    # Concatenar tudo
+    df_final = pd.concat(all_dfs, ignore_index=True)
+    
+    # Nomear colunas (padrão Binance)
+    df_final.columns = [
+        'open_time', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+        'taker_buy_quote', 'ignore'
+    ]
+    
+    # Converter timestamp para datetime
+    df_final['open_time'] = pd.to_datetime(df_final['open_time'], unit='ms')
+    df_final['close_time'] = pd.to_datetime(df_final['close_time'], unit='ms')
+    
+    # Filtrar período exato
+    df_final = df_final[
+        (df_final['open_time'] >= start_date) & 
+        (df_final['open_time'] <= end_date)
+    ]
+    
+    # Salvar
+    df_final.to_csv(output_path, index=False)
+    
+    print(f"\n    ✅ Salvos {len(df_final)} candles em: {output_path}", flush=True)
+    print(f"    Período: {df_final['open_time'].min()} até {df_final['open_time'].max()}", flush=True)
+    
+    return df_final
+
+# ============================================================
 # ⭐ MAIN MODIFICADO
 # ============================================================
 
@@ -523,43 +624,44 @@ def main():
     time.sleep(1)
     
     print("\n" + "="*70, flush=True)
-    print("🚀 DataManager V52 COM TREINO V27", flush=True)
+    print("🚀 DataManager V52 - TREINO V27 (OTIMIZADO)", flush=True)
     print("="*70, flush=True)
     print(f"Símbolo: {SYMBOL}", flush=True)
-    print(f"Período: {START_DT.strftime('%Y-%m-%d')} até {END_DT.strftime('%Y-%m-%d')}", flush=True)
+    print(f"Diretório: {OUT_DIR}", flush=True)
     print("="*70, flush=True)
     
     # ============================================================
-    # PASSO 1: LER CSVs EXISTENTES (PULA DOWNLOAD BINANCE)
+    # PASSO 1: VERIFICAR SE CSVs JÁ EXISTEM (GERADOS PELO V51)
     # ============================================================
     
-    print("\n>>> PASSO 1: Carregando CSVs existentes...", flush=True)
+    print("\n>>> PASSO 1: Verificando CSVs existentes...", flush=True)
     
-    csv_15m_path = os.path.join(OUT_DIR, f"{SYMBOL}_15m.csv")
+    required_tfs = ['15m', '30m', '1h', '4h', '8h', '1d']
+    csv_paths = {}
+    all_exist = True
     
-    if not os.path.exists(csv_15m_path):
-        print(f"❌ ERRO: CSV 15m nao encontrado: {csv_15m_path}", flush=True)
-        print("   Execute primeiro o DataManager original para gerar os CSVs.", flush=True)
+    for tf in required_tfs:
+        csv_path = os.path.join(OUT_DIR, f"{SYMBOL}_{tf}.csv")
+        if os.path.exists(csv_path):
+            size_mb = os.path.getsize(csv_path) / (1024*1024)
+            print(f"    ✅ {tf:3s}: {csv_path} ({size_mb:.2f} MB)", flush=True)
+            csv_paths[tf] = csv_path
+        else:
+            print(f"    ❌ {tf:3s}: NÃO ENCONTRADO: {csv_path}", flush=True)
+            all_exist = False
+    
+    if not all_exist:
+        print("\n    ⚠️  ERRO: CSVs faltando!", flush=True)
+        print("    Execute o DataManager V51 primeiro para gerar os CSVs.", flush=True)
         return
     
-    print(f"    ✅ CSV 15m encontrado: {csv_15m_path}", flush=True)
+    print(f"\n    ✅ Todos os {len(csv_paths)} CSVs encontrados!", flush=True)
     
     # ============================================================
-    # PASSO 2: GERAR MULTIFRAME (30m, 1h, 4h, 8h, 1d)
+    # PASSO 2: CRIAR ZIP DOS CSVs (PARA DOWNLOAD)
     # ============================================================
     
-    csv_paths = gerar_multiframe(csv_15m_path, OUT_DIR)
-    
-    print(f"\n    ✅ Multiframe completo:", flush=True)
-    for tf, path in csv_paths.items():
-        size_mb = os.path.getsize(path) / (1024*1024)
-        print(f"        {tf:3s}: {path} ({size_mb:.2f} MB)", flush=True)
-    
-    # ============================================================
-    # PASSO 3: CRIAR ZIP DOS CSVs
-    # ============================================================
-    
-    print(f"\n>>> PASSO 3: Criando ZIP dos CSVs...", flush=True)
+    print(f"\n>>> PASSO 2: Criando ZIP dos CSVs...", flush=True)
     
     with zipfile.ZipFile(ZIP_CSV_PATH, "w", zipfile.ZIP_DEFLATED) as z:
         for tf, path in csv_paths.items():
@@ -571,13 +673,71 @@ def main():
     print(f"    ✅ ZIP CSVs criado: {ZIP_CSV_PATH} ({zip_size:.2f} MB)", flush=True)
     
     # ============================================================
+    # PASSO 3: ADICIONAR CONTEXTO MULTIFRAME (IGUAL V27 LOCAL)
+    # ============================================================
+    
+    print(f"\n>>> PASSO 3: Adicionando contexto multiframe...", flush=True)
+    
+    # Carregar CSV 15m
+    csv_15m_path = csv_paths['15m']
+    df_15m = pd.read_csv(csv_15m_path)
+    
+    print(f"    CSV 15m carregado: {len(df_15m)} candles", flush=True)
+    
+    # Garantir que 15m tenha 'ts' como int64
+    if df_15m['ts'].dtype != 'int64':
+        df_15m['ts'] = df_15m['ts'].astype('int64')
+    
+    # Carregar e adicionar contexto dos outros TFs
+    for tf in ['30m', '1h', '4h', '8h', '1d']:
+        csv_tf_path = csv_paths[tf]
+        df_tf = pd.read_csv(csv_tf_path)
+        
+        print(f"    Processando {tf}... ({len(df_tf)} candles)", flush=True)
+        
+        # Garantir que tf tenha 'ts' como int64
+        if df_tf['ts'].dtype != 'int64':
+            df_tf['ts'] = df_tf['ts'].astype('int64')
+        
+        # ⚠️ CRÍTICO: Aplicar feature_engine NO TF (igual V27 local!)
+        df_tf = feature_engine(df_tf)
+        
+        # Selecionar apenas colunas de features (não OHLCV)
+        feature_cols_tf = [c for c in df_tf.columns if c not in [
+            'ts', 'open', 'high', 'low', 'close', 'volume',
+            'taker_buy_base', 'taker_buy_quote', 'quote_volume', 
+            'trades', 'close_time', 'ignore'
+        ]]
+        
+        # Renomear para ctx_TF_*
+        rename_map = {col: f'ctx_{tf}_{col}' for col in feature_cols_tf}
+        df_tf_ctx = df_tf[['ts'] + feature_cols_tf].rename(columns=rename_map)
+        
+        # ⚠️ CRÍTICO: merge_asof (não merge simples!)
+        # Isso permite alignment temporal correto
+        df_15m = pd.merge_asof(
+            df_15m.sort_values('ts'),
+            df_tf_ctx.sort_values('ts'),
+            on='ts',
+            direction='backward'  # Usa valor mais recente do TF maior
+        )
+        
+        print(f"        ✅ {len(feature_cols_tf)} features ctx_{tf}_* adicionadas", flush=True)
+    
+    # Forward fill para preencher possíveis NaNs (igual V27 local)
+    ctx_cols = [c for c in df_15m.columns if c.startswith('ctx_')]
+    if ctx_cols:
+        df_15m[ctx_cols] = df_15m[ctx_cols].fillna(method='ffill')
+    
+    total_ctx_cols = len(ctx_cols)
+    print(f"\n    ✅ Total de colunas contexto: {total_ctx_cols}", flush=True)
+    print(f"    ✅ Shape final: {df_15m.shape}", flush=True)
+    
+    # ============================================================
     # PASSO 4: TREINAR MODELO V27
     # ============================================================
     
     print(f"\n>>> PASSO 4: Treinando modelo V27...", flush=True)
-    
-    # Carregar CSV 15m
-    df_15m = pd.read_csv(csv_15m_path)
     
     # Treinar
     modelo, scaler, kmeans, feat_cols = treinar_modelo_v27(df_15m, OUT_DIR)
@@ -651,9 +811,8 @@ def main():
     print(f"📦 CSVs: {ZIP_CSV_PATH}", flush=True)
     print(f"📦 PKLs: {ZIP_PKL_PATH}", flush=True)
     print("="*70, flush=True)
-    print("\n🔗 LINKS PARA DOWNLOAD:", flush=True)
-    print("   CSVs: https://SEU-APP.onrender.com/download/csvs", flush=True)
-    print("   PKLs: https://SEU-APP.onrender.com/download/pkls", flush=True)
+    print("\n🔗 ACESSE O APP PARA DOWNLOAD:", flush=True)
+    print("   https://SEU-APP.onrender.com/", flush=True)
     print("="*70, flush=True)
     
     # Manter servidor vivo
