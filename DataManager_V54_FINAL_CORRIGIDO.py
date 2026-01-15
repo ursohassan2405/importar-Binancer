@@ -38,13 +38,31 @@ sys.stdout.reconfigure(line_buffering=True)
 # CONFIGURAÇÃO IMPECÁVEL (IDENTICA AO ANT)
 # =========================
 SYMBOL = "PENDLEUSDT"
+
+# ⚠️ TESTE: 10 DIAS (comentar depois de testar)
 START_DT = datetime(2025, 1, 1, 0, 0, 0)
-END_DT = datetime(2025, 12, 31, 23, 59, 59)
+END_DT = datetime(2025, 1, 10, 23, 59, 59)  # ⭐ 10 DIAS PARA TESTE
+
+# 🔴 PRODUÇÃO: 1 ANO (descomentar para rodar completo)
+# START_DT = datetime(2025, 1, 1, 0, 0, 0)
+# END_DT = datetime(2025, 12, 31, 23, 59, 59)
 
 # Render persistent disk
-BASE_DISK = "/data" if os.path.exists("/data") else "."
+# PRIORIDADE: /data > /opt/render/project > .
+if os.path.exists("/data"):
+    BASE_DISK = "/data"
+    print("✅ Usando disco persistente: /data", flush=True)
+elif os.path.exists("/opt/render/project"):
+    BASE_DISK = "/opt/render/project"
+    print("⚠️ Usando /opt/render/project (pode ser apagado!)", flush=True)
+else:
+    BASE_DISK = "."
+    print("⚠️ Usando diretório local (SERÁ APAGADO!)", flush=True)
+
 FOLDER_NAME = f"pendle_agg_{START_DT.strftime('%Y%m%d')}_a_{END_DT.strftime('%Y%m%d')}"
 OUT_DIR = os.path.join(BASE_DISK, FOLDER_NAME)
+
+print(f"📂 OUT_DIR: {OUT_DIR}", flush=True)
 
 CSV_PATH = os.path.join(OUT_DIR, f"{SYMBOL}_aggTrades_full.csv")
 ZIP_CSV_PATH = os.path.join(BASE_DISK, f"{FOLDER_NAME}_CSVs.zip")
@@ -353,14 +371,16 @@ def download_daily_file(symbol, date, session, retry_count=5):
         try:
             if attempt > 0:
                 wait = min(5 * (2 ** attempt), 60)
+                print(f"      Retry {attempt}/5 - Aguardando {wait}s...", flush=True)
                 time.sleep(wait)
             
-            response = session.get(url, headers=get_headers(), timeout=90)
+            response = session.get(url, headers=get_headers(), timeout=180)  # ⭐ 3min
             
             if response.status_code == 200:
                 with zipfile.ZipFile(BytesIO(response.content)) as z:
                     files = z.namelist()
                     if not files:
+                        print(f"      ⚠️ ZIP vazio!", flush=True)
                         return None
                     
                     csv_filename = files[0]
@@ -374,12 +394,16 @@ def download_daily_file(symbol, date, session, retry_count=5):
                         return df
             
             elif response.status_code == 404:
+                print(f"      404 Not Found", flush=True)
                 return None
             elif response.status_code in [418, 429]:
+                print(f"      {response.status_code} Rate Limit", flush=True)
                 continue
             else:
+                print(f"      HTTP {response.status_code}", flush=True)
                 continue
-        except Exception:
+        except Exception as e:
+            print(f"      ❌ Erro: {type(e).__name__}: {str(e)[:100]}", flush=True)
             if attempt == retry_count - 1:
                 return None
             continue
@@ -582,7 +606,9 @@ def baixar_e_gerar_csvs():
     for i, date in enumerate(dates, 1):
         print(f"    [{i}/{total_dates}] {date.strftime('%Y-%m-%d')}", end=" ", flush=True)
         
+        t_start = time.time()
         df = download_daily_file(SYMBOL, date, session, retry_count=5)
+        elapsed = time.time() - t_start
         
         if df is not None:
             df_processed = process_binance_data(df)
@@ -591,14 +617,15 @@ def baixar_e_gerar_csvs():
                 df_processed.to_csv(CSV_PATH, mode='a', header=first_write, index=False)
                 first_write = False
                 success_count += 1
-                print(f"✓ {len(df_processed):,}", flush=True)
+                print(f"✓ {len(df_processed):,} trades ({elapsed:.1f}s)", flush=True)
                 del df, df_processed
             else:
-                print("⚠️", flush=True)
+                print(f"⚠️ Vazio ({elapsed:.1f}s)", flush=True)
         else:
-            print("⚠️", flush=True)
+            print(f"⚠️ Falhou ({elapsed:.1f}s)", flush=True)
         
-        time.sleep(random.uniform(0.5, 2.0))
+        # Sleep menor para acelerar
+        time.sleep(random.uniform(0.3, 1.0))
     
     session.close()
     print(f"\n    {success_count}/{total_dates} OK", flush=True)
