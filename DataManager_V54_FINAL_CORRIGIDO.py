@@ -1,14 +1,7 @@
-#!/usr/bin/env python3
 # ============================================================
-# DataManager_V53_FINAL.py
-# PENDLEUSDT – Binance Data Vision + TREINO V27
-# 
-# COMPONENTES:
-# 1. Download aggTrades (V51) - SE NECESSÁRIO
-# 2. Geração de timeframes (V51) - SE NECESSÁRIO  
-# 3. Treino V27 (V52 revisado)
-# 4. Gravação permanente com fsync
-# 5. Download via HTTP
+# DataManager_V54_FINAL_CORRIGIDO.py
+# PENDLEUSDT – Binance Data Vision + Treino XGBoost
+# OBJETIVO: Gerar dados IDÊNTICOS ao ANT (18 colunas) + treinar modelo
 # ============================================================
 
 import os
@@ -18,57 +11,48 @@ import zipfile
 import requests
 import pandas as pd
 import numpy as np
-import joblib
 from datetime import datetime, timedelta
 from io import BytesIO
 import random
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import threading
-
-# ML imports
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
-import xgboost as xgb
+import joblib
+import warnings
+warnings.filterwarnings("ignore")
 
 # Força output unbuffered
 sys.stdout.reconfigure(line_buffering=True)
 
 # =========================
-# CONFIGURAÇÃO IMPECÁVEL (IDENTICA AO ANT)
+# CONFIGURAÇÃO
 # =========================
 SYMBOL = "PENDLEUSDT"
 
-# ⚠️ TESTE: 10 DIAS (comentar depois de testar)
+# TESTE: 10 dias
 START_DT = datetime(2025, 1, 1, 0, 0, 0)
-END_DT = datetime(2025, 1, 10, 23, 59, 59)  # ⭐ 10 DIAS PARA TESTE
+END_DT = datetime(2025, 1, 10, 23, 59, 59)
 
-# 🔴 PRODUÇÃO: 1 ANO (descomentar para rodar completo)
+# PRODUÇÃO: 1 ano (descomentar para produção)
 # START_DT = datetime(2025, 1, 1, 0, 0, 0)
 # END_DT = datetime(2025, 12, 31, 23, 59, 59)
 
-# Render persistent disk
-# PRIORIDADE: /data > /opt/render/project > .
-if os.path.exists("/data"):
-    BASE_DISK = "/data"
-    print("✅ Usando disco persistente: /data", flush=True)
-elif os.path.exists("/opt/render/project"):
-    BASE_DISK = "/opt/render/project"
-    print("⚠️ Usando /opt/render/project (pode ser apagado!)", flush=True)
+# Detectar ambiente (Render vs Local)
+if os.path.exists("/opt/render/project"):
+    BASE_DIR = "/opt/render/project"
+    print(f"⚠️ Usando {BASE_DIR} (pode ser apagado!)")
 else:
-    BASE_DISK = "."
-    print("⚠️ Usando diretório local (SERÁ APAGADO!)", flush=True)
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-FOLDER_NAME = f"pendle_agg_{START_DT.strftime('%Y%m%d')}_a_{END_DT.strftime('%Y%m%d')}"
-OUT_DIR = os.path.join(BASE_DISK, FOLDER_NAME)
-
-print(f"📂 OUT_DIR: {OUT_DIR}", flush=True)
-
-CSV_PATH = os.path.join(OUT_DIR, f"{SYMBOL}_aggTrades_full.csv")
-ZIP_CSV_PATH = os.path.join(BASE_DISK, f"{FOLDER_NAME}_CSVs.zip")
-ZIP_PKL_PATH = os.path.join(BASE_DISK, f"{FOLDER_NAME}_PKLs.zip")
-
+# Diretório de output
+date_str = f"{START_DT.strftime('%Y%m%d')}_a_{END_DT.strftime('%Y%m%d')}"
+OUT_DIR = os.path.join(BASE_DIR, f"pendle_agg_{date_str}")
 os.makedirs(OUT_DIR, exist_ok=True)
+
+CSV_AGG_PATH = os.path.join(OUT_DIR, "PENDLEUSDT_aggTrades.csv")
+CSV_15M_PATH = os.path.join(OUT_DIR, "PENDLEUSDT_15m.csv")
+ZIP_PATH = OUT_DIR + ".zip"
+
+print(f"📂 OUT_DIR: {OUT_DIR}")
 
 BASE_URL = "https://data.binance.vision/data/futures/um/daily/aggTrades"
 
@@ -78,276 +62,8 @@ USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
 ]
 
-# Parâmetros do treino V27
-CANDLES_FUTURO = 5
-
 # =========================
-# FUNÇÕES AUXILIARES (MATEMÁTICA)
-# =========================
-def slope_regression(series, window):
-    """Calcula slope via regressão linear"""
-    # Aceita Series ou array
-    if isinstance(series, pd.Series):
-        values = series.values
-        index = series.index
-    else:
-        values = series
-        index = None
-    
-    slopes = []
-    for i in range(len(values)):
-        if i < window - 1:
-            slopes.append(np.nan)
-        else:
-            y = values[i - window + 1:i + 1]
-            x = np.arange(window)
-            valid = ~np.isnan(y)
-            if valid.sum() < 2:
-                slopes.append(np.nan)
-            else:
-                lr = LinearRegression()
-                lr.fit(x[valid].reshape(-1, 1), y[valid])
-                slopes.append(lr.coef_[0])
-    
-    if index is not None:
-        return pd.Series(slopes, index=index)
-    else:
-        return np.array(slopes)
-
-def realized_vol(close, window=20):
-    """Volatilidade realizada"""
-    log_ret = np.log(close / close.shift(1))
-    return log_ret.rolling(window).std() * np.sqrt(window)
-
-def yang_zhang(df, window=20):
-    """Yang-Zhang volatility"""
-    o = df['open']
-    h = df['high']
-    l = df['low']
-    c = df['close']
-    
-    oc = np.log(o / c.shift(1))
-    cc = np.log(c / c.shift(1))
-    hl = np.log(h / l)
-    
-    k = 0.34 / (1.34 + (window + 1) / (window - 1))
-    
-    rs_var = oc.rolling(window).var()
-    cc_var = cc.rolling(window).var()
-    hl_var = hl.rolling(window).var()
-    
-    yz_var = rs_var + k * cc_var + (1 - k) * hl_var
-    return np.sqrt(yz_var)
-
-# =========================
-# FEATURE ENGINE (16 FEATURES!)
-# =========================
-def feature_engine(df):
-    """Pipeline de features - 16 features base"""
-    df = df.copy()
-    
-    # 1. Básicas
-    df["body"] = (df["close"] - df["open"]).shift(1)
-    df["range"] = (df["high"] - df["low"]).shift(1)
-    
-    # 2. Retornos
-    df["ret1"] = df["close"].pct_change(1).shift(1)
-    df["ret5"] = df["close"].pct_change(5).shift(1)
-    df["log_ret"] = np.log(df["close"] / df["close"].shift(1)).shift(1)
-    
-    # 3. EMAs
-    df["ema9"] = df["close"].ewm(span=9).mean().shift(1)
-    df["ema20"] = df["close"].ewm(span=20).mean().shift(1)
-    df["dist_ema9"] = (df["close"].shift(1) - df["ema9"])
-    df["dist_ema20"] = (df["close"].shift(1) - df["ema20"])
-    
-    # 4. Slopes, Vol, ATR
-    df["slope20"] = slope_regression(df["close"], 20)
-    df["slope50"] = slope_regression(df["close"], 50)
-    df["vol_realized"] = realized_vol(df["close"])
-    df["vol_yz"] = yang_zhang(df)
-    
-    # ⚠️ ATR14 (OBRIGATÓRIO PARA REGIMES!)
-    tr = pd.concat([
-        (df["high"] - df["low"]),
-        (df["high"] - df["close"].shift(1)).abs(),
-        (df["low"] - df["close"].shift(1)).abs()
-    ], axis=1).max(axis=1)
-    df["atr14"] = tr.rolling(14).mean().shift(1)
-    
-    # 5. Agressão
-    if "taker_buy_base" in df.columns:
-        df["aggression_buy"] = df["taker_buy_base"].shift(1)
-        df["aggression_sell"] = (df["volume"] - df["taker_buy_base"]).shift(1)
-        df["aggression_delta"] = (df["taker_buy_base"] - (df["volume"] - df["taker_buy_base"])).shift(1)
-    else:
-        df["aggression_buy"] = 0
-        df["aggression_sell"] = 0
-        df["aggression_delta"] = 0
-    
-    return df
-
-def adicionar_features_avancadas(df):
-    """DESABILITADO - retorna df sem modificações"""
-    return df
-
-# =========================
-# DETECÇÃO DE REGIMES
-# =========================
-def detectar_regimes_mercado_v25(df, n_regimes=4, out_dir=OUT_DIR):
-    """Detecta regimes usando 3 features"""
-    print(">>> Detectando regimes de mercado...", flush=True)
-    
-    REGIME_FEATURES = ['vol_realized', 'atr14', 'slope20']
-    
-    regime_features = [c for c in REGIME_FEATURES if c in df.columns]
-    
-    if len(regime_features) != 3:
-        print(f"    ⚠️ AVISO: Apenas {len(regime_features)}/3 features!", flush=True)
-        print(f"    Faltando: {set(REGIME_FEATURES) - set(regime_features)}", flush=True)
-    
-    X_regime = df[regime_features].fillna(0).values
-    
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_regime)
-    
-    print(f"    📊 MÉDIAS: {scaler.mean_}", flush=True)
-    print(f"    📊 DESVIOS: {scaler.scale_}", flush=True)
-    
-    kmeans = KMeans(n_clusters=n_regimes, random_state=42, n_init=10)
-    df['market_regime'] = kmeans.fit_predict(X_scaled)
-    
-    print(f"    ✅ {n_regimes} regimes detectados", flush=True)
-    print(f"    Distribuição: {df['market_regime'].value_counts().to_dict()}", flush=True)
-    
-    return df, scaler, kmeans
-
-# =========================
-# TREINO V27
-# =========================
-def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
-    """Treina modelo K6 EXATAMENTE como V27"""
-    print("\n" + "="*70, flush=True)
-    print("⭐ TREINO V27", flush=True)
-    print("="*70, flush=True)
-    
-    # 0. Normalizar timestamp
-    if 'open_time' in df_15m.columns and 'ts' not in df_15m.columns:
-        df_15m.rename(columns={'open_time': 'ts'}, inplace=True)
-    
-    # 1. Target K6
-    print(">>> Criando target K6...", flush=True)
-    df_15m['target_K6'] = df_15m['close'].shift(-CANDLES_FUTURO) / df_15m['close'] - 1
-    df_15m['target_K6_bin'] = (df_15m['target_K6'] > 0).astype(int)
-    print(f"    Distribuição: {df_15m['target_K6_bin'].value_counts().to_dict()}", flush=True)
-    
-    # 2. Features
-    print(">>> Calculando features...", flush=True)
-    t_start = time.time()
-    df_15m = feature_engine(df_15m)
-    df_15m = adicionar_features_avancadas(df_15m)
-    print(f"    ✅ {len(df_15m.columns)} colunas ({time.time()-t_start:.1f}s)", flush=True)
-    
-    # 3. Regimes
-    t_start = time.time()
-    df_15m, scaler, kmeans = detectar_regimes_mercado_v25(df_15m, n_regimes=4, out_dir=out_dir)
-    print(f"    ✅ Regimes ({time.time()-t_start:.1f}s)", flush=True)
-    
-    # 4. Preparar X, y
-    print(">>> Preparando matriz...", flush=True)
-    
-    non_feat = {
-        "open", "high", "low", "close", "volume",
-        "ts", "quote_volume", "trades",
-        "taker_buy_base", "taker_buy_quote", "taker_sell_base", "close_time", "ignore", "open_time",
-        "mark_price", "index_price", "fundingRate",
-        "target_K6", "target_K6_bin",
-        "buy_vol", "sell_vol", "delta", "buy_vol_agg", "sell_vol_agg",
-        "total_vol_agg", "cum_delta", "price_range", "absorcao", "vpin"
-    }
-    
-    target_cols = {c for c in df_15m.columns if isinstance(c, str) and c.startswith("target_")}
-    non_feat = non_feat.union(target_cols)
-    
-    feat_cols = [c for c in df_15m.columns if c not in non_feat]
-    X = df_15m[feat_cols].select_dtypes(include=[np.number])
-    feat_cols = list(X.columns)
-    y = df_15m['target_K6_bin'].values
-    
-    print(f"    ANTES dropna: X={X.shape}, y={y.shape}", flush=True)
-    valid_mask = ~(X.isna().any(axis=1) | pd.isna(y))
-    X = X[valid_mask]
-    y = y[valid_mask]
-    print(f"    DEPOIS dropna: X={X.shape}, y={y.shape}", flush=True)
-    print(f"    ✅ Features: {len(feat_cols)}", flush=True)
-    
-    # 5. Split
-    print(">>> Split temporal...", flush=True)
-    split_idx = int(len(X) * 0.8)
-    X_train = X.iloc[:split_idx]
-    y_train = y[:split_idx]
-    X_test = X.iloc[split_idx:]
-    y_test = y[split_idx:]
-    print(f"    Train: {len(X_train)}", flush=True)
-    print(f"    Test: {len(X_test)}", flush=True)
-    
-    # 6. Peso temporal
-    print(">>> Calculando peso temporal...", flush=True)
-    regime_col = 'market_regime'
-    if regime_col not in df_15m.columns:
-        print("    ⚠️ Sem regime! Peso uniforme.", flush=True)
-        sample_weight_train = None
-    else:
-        regime_train = df_15m.loc[X_train.index, regime_col].values
-        regime_counts = pd.Series(regime_train).value_counts()
-        total_samples = len(regime_train)
-        
-        regime_weights = {}
-        for regime_id, count in regime_counts.items():
-            regime_weights[regime_id] = total_samples / (len(regime_counts) * count)
-        
-        sample_weight_train = np.array([regime_weights[r] for r in regime_train])
-        print(f"    ✅ Pesos: {regime_weights}", flush=True)
-    
-    # 7. Treino
-    print(">>> Treinando XGBoost...", flush=True)
-    t_start = time.time()
-    
-    modelo = xgb.XGBClassifier(
-        n_estimators=500,
-        max_depth=6,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=42,
-        n_jobs=-1,
-        tree_method='hist',  # ⭐ IGUAL V27
-        eval_metric='logloss',
-        use_label_encoder=False  # ⭐ IGUAL V27
-    )
-    
-    if sample_weight_train is not None:
-        print("    ⚠️ Peso temporal ATIVADO", flush=True)
-        modelo.fit(X_train, y_train, sample_weight=sample_weight_train,
-                   eval_set=[(X_test, y_test)], verbose=False)
-    else:
-        print("    ⚠️ Peso temporal DESATIVADO", flush=True)
-        modelo.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
-    
-    print(f"    ✅ Treinado em {time.time()-t_start:.1f}s", flush=True)
-    
-    # 8. Avaliar
-    from sklearn.metrics import accuracy_score, classification_report
-    y_pred = modelo.predict(X_test)
-    acc = accuracy_score(y_test, y_pred)
-    print(f"\n>>> Acurácia: {acc:.2%}", flush=True)
-    print(classification_report(y_test, y_pred, target_names=['DOWN', 'UP']), flush=True)
-    print("="*70, flush=True)
-    
-    return modelo, scaler, kmeans, feat_cols
-
-# =========================
-# DOWNLOAD BINANCE (V51)
+# FUNÇÕES DE DOWNLOAD
 # =========================
 def generate_date_range(start_dt, end_dt):
     dates = []
@@ -373,16 +89,14 @@ def download_daily_file(symbol, date, session, retry_count=5):
         try:
             if attempt > 0:
                 wait = min(5 * (2 ** attempt), 60)
-                print(f"      Retry {attempt}/5 - Aguardando {wait}s...", flush=True)
                 time.sleep(wait)
             
-            response = session.get(url, headers=get_headers(), timeout=180)  # ⭐ 3min
+            response = session.get(url, headers=get_headers(), timeout=90)
             
             if response.status_code == 200:
                 with zipfile.ZipFile(BytesIO(response.content)) as z:
                     files = z.namelist()
                     if not files:
-                        print(f"      ⚠️ ZIP vazio!", flush=True)
                         return None
                     
                     csv_filename = files[0]
@@ -396,16 +110,13 @@ def download_daily_file(symbol, date, session, retry_count=5):
                         return df
             
             elif response.status_code == 404:
-                print(f"      404 Not Found", flush=True)
                 return None
             elif response.status_code in [418, 429]:
-                print(f"      {response.status_code} Rate Limit", flush=True)
                 continue
             else:
-                print(f"      HTTP {response.status_code}", flush=True)
                 continue
-        except Exception as e:
-            print(f"      ❌ Erro: {type(e).__name__}: {str(e)[:100]}", flush=True)
+        
+        except Exception:
             if attempt == retry_count - 1:
                 return None
             continue
@@ -417,7 +128,7 @@ def process_binance_data(df):
         return None
     
     if 'transact_time' not in df.columns:
-        df.columns = ['agg_trade_id', 'price', 'quantity', 'first_trade_id',
+        df.columns = ['agg_trade_id', 'price', 'quantity', 'first_trade_id', 
                       'last_trade_id', 'transact_time', 'is_buyer_maker']
     
     def convert_side(val):
@@ -432,30 +143,38 @@ def process_binance_data(df):
     
     return df_processed.dropna()
 
-def gerar_15m_tratado_incremental(csv_agg_path, csv_15m_path, timeframe_min=15, min_val_usd=500, chunksize=200_000):
-    """Gera timeframe a partir de aggTrades (V51)"""
-    print(f">>> Gerando {timeframe_min}m...", flush=True)
-    
+# =========================
+# GERAÇÃO DO CSV 15M - 18 COLUNAS (IGUAL ANT)
+# =========================
+def gerar_15m_tratado(csv_agg_path, csv_15m_path, timeframe_min=15, min_val_usd=500, chunksize=200_000):
+    """
+    Gera CSV 15m com EXATAMENTE 18 colunas igual ao ANT:
+    ts, open, high, low, close, volume, quote_volume, trades,
+    taker_buy_base, taker_buy_quote, close_time, cum_delta,
+    total_vol_agg, buy_vol_agg, sell_vol_agg, vpin, price_range, absorcao
+    """
+    print(">>> Gerando dataset 15m (18 colunas igual ANT)...", flush=True)
+
     buckets = {}
-    
+
     for chunk in pd.read_csv(csv_agg_path, chunksize=chunksize):
         chunk["ts"] = pd.to_numeric(chunk["ts"], errors="coerce")
         chunk["price"] = pd.to_numeric(chunk["price"], errors="coerce")
         chunk["qty"] = pd.to_numeric(chunk["qty"], errors="coerce")
         chunk["side"] = pd.to_numeric(chunk["side"], errors="coerce")
-        
+
         chunk = chunk.dropna(subset=["ts", "price", "qty", "side"])
         if chunk.empty:
             continue
-        
+
         dt = pd.to_datetime(chunk["ts"].astype("int64"), unit="ms", utc=True)
         bucket_dt = dt.dt.floor(f"{timeframe_min}min")
         bucket_ms = (bucket_dt.astype("int64") // 10**6).astype("int64")
         chunk = chunk.assign(bucket_ms=bucket_ms)
-        
+
         val_usd = chunk["price"] * chunk["qty"]
         is_whale = val_usd >= float(min_val_usd)
-        
+
         for ts_ms, price, qty, side, bms, whale in zip(
             chunk["ts"].astype("int64"),
             chunk["price"].astype(float),
@@ -473,10 +192,10 @@ def gerar_15m_tratado_incremental(csv_agg_path, csv_15m_path, timeframe_min=15, 
                     "low": float(price),
                     "close": float(price),
                     "volume": 0.0,
-                    "buy_vol": 0.0,
-                    "sell_vol": 0.0,
-                    "total_taker_buy_qty": 0.0,  # ⭐ TOTAL (não só baleias)
-                    "total_taker_buy_quote": 0.0,  # ⭐ TOTAL (não só baleias)
+                    "taker_buy_base": 0.0,  # TODO volume buy (não filtrado)
+                    "buy_vol": 0.0,         # SÓ baleias
+                    "sell_vol": 0.0,        # SÓ baleias
+                    "trades": 0,
                 }
                 buckets[bms] = st
             else:
@@ -485,200 +204,505 @@ def gerar_15m_tratado_incremental(csv_agg_path, csv_15m_path, timeframe_min=15, 
                 if price < st["low"]:
                     st["low"] = float(price)
                 st["close"] = float(price)
-            
+
             st["volume"] += float(qty)
+            st["trades"] += 1
             
-            # ⚠️ CRÍTICO: Rastrear TODO taker buy (não só baleias!)
-            val_usd = float(price) * float(qty)
+            # taker_buy_base = TODO volume buy (side=0 significa buyer maker = comprador agressivo)
             if side == 0:
-                st["total_taker_buy_qty"] += float(qty)
-                st["total_taker_buy_quote"] += val_usd
-            
-            # Baleias (separado!)
+                st["taker_buy_base"] += float(qty)
+
+            # Baleias (>$500)
             if whale:
                 if side == 0:
                     st["buy_vol"] += float(qty)
                 else:
                     st["sell_vol"] += float(qty)
-    
+
     if not buckets:
-        raise RuntimeError("Nenhum bucket gerado!")
-    
+        raise RuntimeError("Nenhum bucket 15m gerado!")
+
+    # Monta DataFrame
     rows = []
     for bms in sorted(buckets.keys()):
         st = buckets[bms]
-        rows.append([
-            st["ts"], st["open"], st["high"], st["low"], st["close"],
-            st["volume"], st["buy_vol"], st["sell_vol"],
-            st["buy_vol"] - st["sell_vol"],
-            st["total_taker_buy_qty"],  # ⭐ TOTAL (não só baleias)
-            st["total_taker_buy_quote"],  # ⭐ TOTAL (não só baleias)
-        ])
+        rows.append(st)
+
+    df_15m = pd.DataFrame(rows)
     
-    df_15m = pd.DataFrame(rows, columns=[
-        "ts", "open", "high", "low", "close",
-        "volume", "buy_vol", "sell_vol", "delta",
-        "total_taker_buy_qty", "total_taker_buy_quote"
-    ])
-    
-    # ⚠️ CRÍTICO: Enriquecimento IGUAL ao ANT
-    # taker_buy_base = TOTAL (não só baleias!)
-    # buy_vol_agg = BALEIAS (filtrado!)
-    df_15m["taker_buy_base"] = df_15m["total_taker_buy_qty"]
-    df_15m["taker_buy_quote"] = df_15m["total_taker_buy_quote"]
-    df_15m["buy_vol_agg"] = df_15m["buy_vol"]  # Baleias BUY
-    df_15m["sell_vol_agg"] = df_15m["sell_vol"]  # Baleias SELL
-    df_15m["total_vol_agg"] = df_15m["buy_vol_agg"] + df_15m["sell_vol_agg"]
-    
+    # Calcular campos derivados
     df_15m["quote_volume"] = df_15m["volume"] * df_15m["close"]
-    df_15m["trades"] = 0
+    df_15m["taker_buy_quote"] = df_15m["taker_buy_base"] * df_15m["close"]
     df_15m["close_time"] = df_15m["ts"] + (timeframe_min * 60 * 1000) - 1
     
-    df_15m = df_15m.sort_values("ts").reset_index(drop=True)
+    # Delta e cum_delta
+    df_15m["delta"] = df_15m["buy_vol"] - df_15m["sell_vol"]
     df_15m["cum_delta"] = df_15m["delta"].cumsum()
+    
+    # Métricas de fluxo
+    df_15m["total_vol_agg"] = df_15m["buy_vol"] + df_15m["sell_vol"]
+    df_15m["buy_vol_agg"] = df_15m["buy_vol"]
+    df_15m["sell_vol_agg"] = df_15m["sell_vol"]
+    
     df_15m["price_range"] = df_15m["high"] - df_15m["low"]
-    df_15m["absorcao"] = df_15m["delta"] / (df_15m["price_range"].replace(0, 1e-9))
     df_15m["vpin"] = (df_15m["buy_vol_agg"] - df_15m["sell_vol_agg"]).abs() / (
         df_15m["total_vol_agg"].replace(0, 1e-9)
     )
+    df_15m["absorcao"] = df_15m["delta"] / (df_15m["price_range"].replace(0, 1e-9))
+
+    # ORDEM DAS 18 COLUNAS - IGUAL ANT
+    cols_18 = [
+        "ts", "open", "high", "low", "close", "volume", "quote_volume", "trades",
+        "taker_buy_base", "taker_buy_quote", "close_time", "cum_delta",
+        "total_vol_agg", "buy_vol_agg", "sell_vol_agg", "vpin", "price_range", "absorcao"
+    ]
+    
+    df_15m = df_15m[cols_18]
     
     # Saneamento
-    num_cols = [
-        "open","high","low","close","volume",
-        "taker_buy_base","taker_buy_quote",
-        "buy_vol_agg","sell_vol_agg","total_vol_agg",
-        "quote_volume","cum_delta","price_range","absorcao","vpin"
-    ]
-    for c in num_cols:
-        df_15m[c] = pd.to_numeric(df_15m[c], errors="coerce").replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
-    
-    df_15m["ts"] = pd.to_numeric(df_15m["ts"], errors="coerce").fillna(0).astype("int64")
-    df_15m["trades"] = pd.to_numeric(df_15m["trades"], errors="coerce").fillna(0).astype("int64")
-    df_15m["close_time"] = pd.to_numeric(df_15m["close_time"], errors="coerce").fillna(0).astype("int64")
-    
-    # ⚠️ ORDEM EXATA DO ANT (18 COLUNAS!)
-    cols_v1 = [
-        "ts", "open", "high", "low", "close",
-        "volume", "quote_volume", "trades",
-        "taker_buy_base", "taker_buy_quote", "close_time",
-        "cum_delta", "total_vol_agg",
-        "buy_vol_agg", "sell_vol_agg",
-        "vpin", "price_range", "absorcao"
-    ]
-    for c in cols_v1:
-        if c not in df_15m.columns:
-            df_15m[c] = 0.0
-    
-    df_15m = df_15m[cols_v1]
+    for c in cols_18:
+        if c in ["ts", "trades", "close_time"]:
+            df_15m[c] = pd.to_numeric(df_15m[c], errors="coerce").fillna(0).astype("int64")
+        else:
+            df_15m[c] = pd.to_numeric(df_15m[c], errors="coerce").replace(
+                [float("inf"), float("-inf")], 0.0
+            ).fillna(0.0)
+
     df_15m.to_csv(csv_15m_path, index=False)
     
-    # ⚠️ GRAVAÇÃO PERMANENTE (fsync)
-    try:
-        with open(csv_15m_path, 'rb') as f:
-            os.fsync(f.fileno())
-    except Exception:
-        pass
+    print(f"    ✅ {len(df_15m)} candles", flush=True)
+    print(f"    🐋 Candles com baleias: {(df_15m['buy_vol_agg'] > 0).sum()}/{len(df_15m)}", flush=True)
+    print(f"    📊 Colunas: {len(df_15m.columns)} (esperado: 18)", flush=True)
     
-    # ⚠️ ESTATÍSTICAS DAS BALEIAS (DEBUG)
-    total_candles = len(df_15m)
-    candles_com_baleias = (df_15m['buy_vol_agg'] + df_15m['sell_vol_agg'] > 0).sum()
-    pct_baleias = (candles_com_baleias / total_candles * 100) if total_candles > 0 else 0
-    
-    print(f"    ✅ {total_candles} candles → {csv_15m_path}", flush=True)
-    print(f"    🐋 Candles com baleias: {candles_com_baleias}/{total_candles} ({pct_baleias:.1f}%)", flush=True)
-    
-    if pct_baleias < 10:
-        print(f"    ⚠️ AVISO: Poucas baleias detectadas! Verificar threshold $500", flush=True)
+    return df_15m
 
-def baixar_e_gerar_csvs():
-    """Download e geração (V51)"""
-    print("\n>>> BAIXANDO aggTrades...", flush=True)
-    
-    dates = generate_date_range(START_DT, END_DT)
-    total_dates = len(dates)
-    print(f"    {total_dates} dias", flush=True)
-    
-    if os.path.exists(CSV_PATH):
-        os.remove(CSV_PATH)
-    
-    session = requests.Session()
-    success_count = 0
-    first_write = True
-    
-    for i, date in enumerate(dates, 1):
-        print(f"    [{i}/{total_dates}] {date.strftime('%Y-%m-%d')}", end=" ", flush=True)
-        
-        t_start = time.time()
-        df = download_daily_file(SYMBOL, date, session, retry_count=5)
-        elapsed = time.time() - t_start
-        
-        if df is not None:
-            df_processed = process_binance_data(df)
-            
-            if df_processed is not None and not df_processed.empty:
-                df_processed.to_csv(CSV_PATH, mode='a', header=first_write, index=False)
-                first_write = False
-                success_count += 1
-                print(f"✓ {len(df_processed):,} trades ({elapsed:.1f}s)", flush=True)
-                del df, df_processed
-            else:
-                print(f"⚠️ Vazio ({elapsed:.1f}s)", flush=True)
+# =========================
+# FEATURE ENGINE (DO V27)
+# =========================
+from sklearn.linear_model import LinearRegression
+
+def slope_regression(series_values, window=20):
+    """Inclinação da regressão linear."""
+    X = np.arange(window).reshape(-1, 1)
+    slopes = [np.nan] * window
+    for i in range(window, len(series_values)):
+        y = series_values[i-window:i]
+        if len(y) == window and not np.any(np.isnan(y)):
+            slopes.append(LinearRegression().fit(X, y).coef_[0])
         else:
-            print(f"⚠️ Falhou ({elapsed:.1f}s)", flush=True)
-        
-        # Sleep menor para acelerar
-        time.sleep(random.uniform(0.3, 1.0))
+            slopes.append(np.nan)
+    return np.array(slopes)
+
+def realized_vol(close):
+    """Volatilidade realizada."""
+    return np.sqrt((np.log(close / close.shift(1)) ** 2).rolling(20).mean())
+
+def yang_zhang(df):
+    """Volatilidade Yang-Zhang."""
+    log_ho = np.log(df["high"] / df["open"])
+    log_lo = np.log(df["low"] / df["open"])
+    log_oc = np.log(df["open"] / df["close"].shift(1))
+    log_co = np.log(df["close"] / df["open"])
+    rs = (log_ho**2 + log_lo**2).rolling(20).mean()
+    close_vol = log_co.rolling(20).std() ** 2
+    open_vol = log_oc.rolling(20).std() ** 2
+    return np.sqrt(0.34 * open_vol + 0.34 * close_vol + 0.27 * rs)
+
+def feature_engine(df):
+    """Pipeline de Features - Versão V27."""
+    df = df.copy()
+
+    # Price Action
+    df["body"] = df["close"] - df["open"]
+    df["range"] = df["high"] - df["low"]
+    df["upper_wick"] = df["high"] - df[["open", "close"]].max(axis=1)
+    df["lower_wick"] = df[["open", "close"]].min(axis=1) - df["low"]
     
-    session.close()
-    print(f"\n    {success_count}/{total_dates} OK", flush=True)
+    # Retornos
+    df["ret1"] = df["close"].pct_change(1)
+    df["ret2"] = df["close"].pct_change(2)
+    df["ret5"] = df["close"].pct_change(5)
+    df["ret10"] = df["close"].pct_change(10)
+    df["log_ret"] = np.log(df["close"] / df["close"].shift(1))
+
+    # EMAs
+    df["ema9"] = df["close"].ewm(span=9, adjust=False).mean()
+    df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
+    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+    df["dist_ema9"] = df["close"] - df["ema9"]
+    df["dist_ema20"] = df["close"] - df["ema20"]
+
+    # Slopes
+    df["slope20"] = slope_regression(df["close"].values, 20)
+    df["slope50"] = slope_regression(df["close"].values, 50)
     
-    if success_count == 0:
-        raise Exception("❌ NENHUM DADO! Download falhou completamente!")
+    # Volatilidades
+    df["vol_realized"] = realized_vol(df["close"])
+    df["vol_yz"] = yang_zhang(df)
     
-    if success_count < total_dates * 0.5:
-        print(f"    ⚠️ AVISO: Apenas {success_count}/{total_dates} dias baixados!", flush=True)
-        print(f"    Isso pode afetar a qualidade do modelo!", flush=True)
+    # ATR
+    tr = pd.concat([
+        (df["high"] - df["low"]),
+        (df["high"] - df["close"].shift(1)).abs(),
+        (df["low"] - df["close"].shift(1)).abs()
+    ], axis=1).max(axis=1)
+    df["atr14"] = tr.rolling(14).mean()
     
-    # ⚠️ VALIDAÇÃO: Verificar se aggTrades TEM dados
-    df_test = pd.read_csv(CSV_PATH, nrows=100)
-    if 'side' not in df_test.columns:
-        raise Exception("❌ CSV NÃO É aggTrades! Faltam colunas de trade!")
+    # RSI
+    delta = df["close"].diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / (loss + 1e-9)
+    df["rsi_14"] = 100 - (100 / (1 + rs))
+
+    # Agressão (se disponível)
+    if "taker_buy_base" in df.columns:
+        df["aggression_buy"] = df["taker_buy_base"]
+        df["aggression_delta"] = df["taker_buy_base"] - (df["volume"] - df["taker_buy_base"])
+        df["aggression_ratio"] = df["taker_buy_base"] / (df["volume"] + 1e-9)
     
-    print(f"    ✅ Validação: CSV é aggTrades (coluna 'side' presente)", flush=True)
+    # Volume features
+    df["volume_ma20"] = df["volume"].rolling(20).mean()
+    df["volume_ratio"] = df["volume"] / (df["volume_ma20"] + 1e-9)
+    df["volume_zscore"] = (df["volume"] - df["volume_ma20"]) / (df["volume"].rolling(20).std() + 1e-9)
     
-    # Gerar timeframes
-    print("\n>>> Gerando timeframes...", flush=True)
+    # Percentuais
+    df["range_pct"] = df["range"] / (df["close"] + 1e-9)
+    df["body_pct"] = df["body"].abs() / (df["close"] + 1e-9)
+    df["body_to_range"] = df["body"] / (df["range"] + 1e-9)
     
-    timeframes = {
-        "15m": 15,
-        "30m": 30,
-        "1h": 60,
-        "4h": 240,
-        "8h": 480,
-        "1d": 1440,
+    # Wicks
+    df["wick_ratio_up"] = df["upper_wick"] / (df["range"] + 1e-9)
+    df["wick_ratio_down"] = df["lower_wick"] / (df["range"] + 1e-9)
+    
+    # Close position
+    df["close_pos"] = (df["close"] - df["low"]) / (df["range"] + 1e-9)
+    
+    # Momentum
+    df["momentum_1"] = df["ret1"]
+    df["momentum_2"] = df["ret2"]
+    df["momentum_accel"] = df["momentum_1"] - df["momentum_2"]
+    
+    # Volatility acceleration
+    df["volatility_accel"] = df["range_pct"].diff()
+    
+    # Z-scores
+    df["body_z"] = (df["body"] - df["body"].rolling(10).mean()) / (df["body"].rolling(10).std() + 1e-9)
+    df["range_z"] = (df["range"] - df["range"].rolling(10).mean()) / (df["range"].rolling(10).std() + 1e-9)
+    
+    # Bollinger
+    df["bb_mid"] = df["close"].rolling(20).mean()
+    df["bb_std"] = df["close"].rolling(20).std()
+    df["bb_upper"] = df["bb_mid"] + 2 * df["bb_std"]
+    df["bb_lower"] = df["bb_mid"] - 2 * df["bb_std"]
+    df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / (df["bb_mid"] + 1e-9)
+    df["bb_pct"] = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"] + 1e-9)
+    
+    # Keltner
+    df["kc_mid"] = df["close"].ewm(span=20).mean()
+    df["kc_upper"] = df["kc_mid"] + 1.5 * df["atr14"]
+    df["kc_lower"] = df["kc_mid"] - 1.5 * df["atr14"]
+    
+    # Squeeze
+    df["squeeze"] = ((df["bb_upper"] < df["kc_upper"]) & (df["bb_lower"] > df["kc_lower"])).astype(int)
+    
+    # MACD
+    ema12 = df["close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["close"].ewm(span=26, adjust=False).mean()
+    df["macd"] = ema12 - ema26
+    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+    df["macd_hist"] = df["macd"] - df["macd_signal"]
+    
+    # Stochastic
+    low_14 = df["low"].rolling(14).min()
+    high_14 = df["high"].rolling(14).max()
+    df["stoch_k"] = 100 * (df["close"] - low_14) / (high_14 - low_14 + 1e-9)
+    df["stoch_d"] = df["stoch_k"].rolling(3).mean()
+    
+    # OBV
+    obv = [0]
+    for i in range(1, len(df)):
+        if df["close"].iloc[i] > df["close"].iloc[i-1]:
+            obv.append(obv[-1] + df["volume"].iloc[i])
+        elif df["close"].iloc[i] < df["close"].iloc[i-1]:
+            obv.append(obv[-1] - df["volume"].iloc[i])
+        else:
+            obv.append(obv[-1])
+    df["obv"] = obv
+    df["obv_ma"] = pd.Series(obv).rolling(20).mean().values
+    
+    # ADX (simplificado)
+    plus_dm = df["high"].diff()
+    minus_dm = -df["low"].diff()
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
+    
+    atr_14 = df["atr14"]
+    plus_di = 100 * (plus_dm.rolling(14).mean() / (atr_14 + 1e-9))
+    minus_di = 100 * (minus_dm.rolling(14).mean() / (atr_14 + 1e-9))
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)
+    df["adx"] = dx.rolling(14).mean()
+    df["plus_di"] = plus_di
+    df["minus_di"] = minus_di
+    
+    # Williams %R
+    df["willr"] = -100 * (high_14 - df["close"]) / (high_14 - low_14 + 1e-9)
+    
+    # CCI
+    tp = (df["high"] + df["low"] + df["close"]) / 3
+    tp_ma = tp.rolling(20).mean()
+    tp_std = tp.rolling(20).std()
+    df["cci"] = (tp - tp_ma) / (0.015 * tp_std + 1e-9)
+    
+    # MFI
+    if "taker_buy_base" in df.columns:
+        mf_pos = (tp * df["taker_buy_base"]).rolling(14).sum()
+        mf_neg = (tp * (df["volume"] - df["taker_buy_base"])).rolling(14).sum()
+        df["mfi"] = 100 - (100 / (1 + mf_pos / (mf_neg + 1e-9)))
+    
+    return df
+
+# =========================
+# TARGET K (DO V27)
+# =========================
+def criar_targets_k(df, lookforward=8):
+    """Cria targets K1-K5 baseados em movimento futuro."""
+    df = df.copy()
+    
+    # Retorno futuro
+    df["close_future"] = df["close"].shift(-lookforward)
+    df["ret_fut"] = (df["close_future"] - df["close"]) / df["close"]
+    
+    # High/Low futuros para movimento máximo
+    df["high_fut"] = df["high"].rolling(lookforward).max().shift(-lookforward)
+    df["low_fut"] = df["low"].rolling(lookforward).min().shift(-lookforward)
+    
+    # Amplitude do movimento
+    df["amp_fut"] = df["ret_fut"].abs()
+    
+    # Thresholds baseados em percentis do movimento
+    p50 = df["amp_fut"].quantile(0.50)
+    p60 = df["amp_fut"].quantile(0.60)
+    p70 = df["amp_fut"].quantile(0.70)
+    p80 = df["amp_fut"].quantile(0.80)
+    p90 = df["amp_fut"].quantile(0.90)
+    
+    print(f">>> Percentis de movimento:")
+    print(f"    P50: {p50*100:.3f}%")
+    print(f"    P60: {p60*100:.3f}%")
+    print(f"    P70: {p70*100:.3f}%")
+    print(f"    P80: {p80*100:.3f}%")
+    print(f"    P90: {p90*100:.3f}%")
+    
+    # Target K1: Movimento > P50 (mais fácil)
+    df["target_K1"] = 0
+    df.loc[df["ret_fut"] > p50, "target_K1"] = 1
+    df.loc[df["ret_fut"] < -p50, "target_K1"] = -1
+    
+    # Target K2: Movimento > P60
+    df["target_K2"] = 0
+    df.loc[df["ret_fut"] > p60, "target_K2"] = 1
+    df.loc[df["ret_fut"] < -p60, "target_K2"] = -1
+    
+    # Target K3: Movimento > P70
+    df["target_K3"] = 0
+    df.loc[df["ret_fut"] > p70, "target_K3"] = 1
+    df.loc[df["ret_fut"] < -p70, "target_K3"] = -1
+    
+    # Target K4: Movimento > P80
+    df["target_K4"] = 0
+    df.loc[df["ret_fut"] > p80, "target_K4"] = 1
+    df.loc[df["ret_fut"] < -p80, "target_K4"] = -1
+    
+    # Target K5: Movimento > P90 (mais difícil)
+    df["target_K5"] = 0
+    df.loc[df["ret_fut"] > p90, "target_K5"] = 1
+    df.loc[df["ret_fut"] < -p90, "target_K5"] = -1
+    
+    # Target binário simples (para teste rápido)
+    df["target_A_bin"] = (df["ret_fut"] > 0).astype(int)
+    
+    return df
+
+# =========================
+# TREINO DO MODELO (DO V27)
+# =========================
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+
+def treinar_modelo_v27(df, out_dir):
+    """
+    Treina modelo XGBoost no estilo V27.
+    """
+    print("\n" + "="*60)
+    print("🚀 TREINO DO MODELO - ESTILO V27")
+    print("="*60)
+    
+    try:
+        from xgboost import XGBClassifier
+    except ImportError:
+        print("❌ XGBoost não instalado. Instale com: pip install xgboost")
+        return None, None, None, None
+    
+    # Aplicar features
+    print(">>> Aplicando Feature Engine...")
+    df = feature_engine(df)
+    
+    # Criar targets
+    print(">>> Criando targets K...")
+    df = criar_targets_k(df, lookforward=8)
+    
+    # Remover NaN iniciais
+    df = df.dropna().reset_index(drop=True)
+    print(f">>> Dados após limpeza: {len(df)} linhas")
+    
+    if len(df) < 100:
+        print("❌ Dados insuficientes para treino!")
+        return None, None, None, None
+    
+    # Selecionar features (excluir targets e colunas não-feature)
+    non_feat = {
+        "ts", "open", "high", "low", "close", "volume", "quote_volume", "trades",
+        "taker_buy_base", "taker_buy_quote", "close_time", "cum_delta",
+        "total_vol_agg", "buy_vol_agg", "sell_vol_agg", "vpin", "price_range", "absorcao",
+        "close_future", "ret_fut", "high_fut", "low_fut", "amp_fut",
+        "target_K1", "target_K2", "target_K3", "target_K4", "target_K5", "target_A_bin"
     }
     
-    for tf_name, tf_min in timeframes.items():
-        csv_tf_path = os.path.join(OUT_DIR, f"PENDLEUSDT_{tf_name}.csv")
-        if os.path.exists(csv_tf_path):
-            os.remove(csv_tf_path)
-        gerar_15m_tratado_incremental(CSV_PATH, csv_tf_path, timeframe_min=tf_min, min_val_usd=500, chunksize=200_000)
+    feat_cols = [c for c in df.columns if c not in non_feat and df[c].dtype in ['float64', 'int64', 'float32', 'int32']]
+    print(f">>> Features: {len(feat_cols)}")
+    
+    # Preparar X e y
+    target_col = "target_A_bin"  # Começar com target binário simples
+    
+    X = df[feat_cols].values
+    y = df[target_col].values
+    
+    # Verificar se y tem valores válidos
+    unique_y = np.unique(y)
+    print(f">>> Classes no target: {unique_y}")
+    
+    if len(unique_y) < 2:
+        print("❌ Target não tem variação suficiente!")
+        return None, None, None, None
+    
+    # Split temporal (70/30)
+    n = len(X)
+    train_end = int(n * 0.7)
+    
+    X_train = X[:train_end]
+    y_train = y[:train_end]
+    X_test = X[train_end:]
+    y_test = y[train_end:]
+    
+    print(f">>> Split temporal...")
+    print(f"    Train: {len(X_train)}")
+    print(f"    Test: {len(X_test)}")
+    
+    if len(X_train) == 0 or len(X_test) == 0:
+        print("❌ Split resultou em conjuntos vazios!")
+        return None, None, None, None
+    
+    # Calcular peso temporal (dados mais recentes = mais peso)
+    print(">>> Calculando peso temporal...")
+    ts = df["ts"].values[:train_end]
+    ts_max = ts.max()
+    ts_min = ts.min()
+    
+    if ts_max > ts_min:
+        idade_norm = (ts - ts_min) / (ts_max - ts_min)
+        sample_weight_train = 0.5 + 0.5 * idade_norm  # Peso entre 0.5 e 1.0
+    else:
+        sample_weight_train = np.ones(len(X_train))
+    
+    print(f"    ✅ Pesos: min={sample_weight_train.min():.2f}, max={sample_weight_train.max():.2f}")
+    
+    # Treinar XGBoost (configuração do V27)
+    print(">>> Treinando XGBoost...")
+    
+    modelo = XGBClassifier(
+        n_estimators=500,
+        max_depth=6,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        n_jobs=-1,
+        tree_method='hist',
+        eval_metric='logloss',
+        use_label_encoder=False
+    )
+    
+    modelo.fit(
+        X_train, y_train,
+        sample_weight=sample_weight_train,
+        eval_set=[(X_test, y_test)],
+        verbose=False
+    )
+    
+    # Avaliar
+    from sklearn.metrics import accuracy_score, f1_score
+    
+    y_pred = modelo.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred, average='macro')
+    
+    print(f"\n>>> RESULTADOS:")
+    print(f"    Accuracy: {acc*100:.2f}%")
+    print(f"    F1-Score: {f1:.4f}")
+    
+    # Criar scaler e kmeans para regimes (como no V27)
+    print("\n>>> Criando detector de regimes...")
+    
+    regime_features = ['vol_realized', 'atr14', 'slope20']
+    regime_cols_exist = [c for c in regime_features if c in df.columns]
+    
+    if len(regime_cols_exist) >= 3:
+        X_regime = df[regime_cols_exist].fillna(0).values
         
-        # ⚠️ CRÍTICO: Verificar gravação
-        if not os.path.exists(csv_tf_path):
-            raise Exception(f"❌ {csv_tf_path} NÃO gravado!")
+        scaler = StandardScaler()
+        X_regime_scaled = scaler.fit_transform(X_regime)
         
-        # Sync
-        try:
-            os.sync()
-        except:
-            pass
+        kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+        kmeans.fit(X_regime_scaled)
+        
+        df["market_regime"] = kmeans.predict(X_regime_scaled)
+        print(f"    ✅ Regimes: {df['market_regime'].value_counts().to_dict()}")
+    else:
+        scaler = None
+        kmeans = None
+        print("    ⚠️ Features de regime insuficientes")
+    
+    # Salvar modelo
+    os.makedirs(out_dir, exist_ok=True)
+    
+    model_path = os.path.join(out_dir, "modelo_xgb.pkl")
+    joblib.dump(modelo, model_path)
+    print(f"\n>>> Modelo salvo: {model_path}")
+    
+    if scaler is not None:
+        scaler_path = os.path.join(out_dir, "scaler_regimes.pkl")
+        joblib.dump(scaler, scaler_path)
+        print(f">>> Scaler salvo: {scaler_path}")
+    
+    if kmeans is not None:
+        kmeans_path = os.path.join(out_dir, "kmeans_regimes.pkl")
+        joblib.dump(kmeans, kmeans_path)
+        print(f">>> KMeans salvo: {kmeans_path}")
+    
+    # Salvar features usadas
+    features_path = os.path.join(out_dir, "features.json")
+    import json
+    with open(features_path, "w") as f:
+        json.dump({"features": feat_cols}, f, indent=2)
+    print(f">>> Features salvas: {features_path}")
+    
+    return modelo, scaler, kmeans, feat_cols
 
 # =========================
-# CATBOX UPLOAD
+# UPLOAD CATBOX
 # =========================
 def upload_catbox(filepath):
-    """Upload para CatBox (funciona no Render!)"""
     url = "https://catbox.moe/user/api.php"
     with open(filepath, "rb") as f:
         r = requests.post(
@@ -691,218 +715,162 @@ def upload_catbox(filepath):
     return r.text.strip()
 
 # =========================
+# SERVIDOR HTTP
+# =========================
+class DownloadHandler(SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/download':
+            if os.path.exists(ZIP_PATH):
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/zip')
+                self.send_header('Content-Disposition', 'attachment; filename="PENDLEUSDT_data.zip"')
+                self.end_headers()
+                with open(ZIP_PATH, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b'ZIP nao criado ainda')
+        else:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.end_headers()
+            status = 'PRONTO!' if os.path.exists(ZIP_PATH) else 'Processando...'
+            html = f'<html><body style="font-family:Arial;padding:50px;text-align:center;"><h1>PENDLEUSDT</h1><p>{status}</p><a href="/download">BAIXAR ZIP</a></body></html>'
+            self.wfile.write(html.encode())
+
+def start_http_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), DownloadHandler)
+    print(f">>> Servidor HTTP na porta {port}", flush=True)
+    server.serve_forever()
+
+# =========================
 # MAIN
 # =========================
 def main():
-    print("\n" + "="*70, flush=True)
-    print("🚀 DataManager V53 FINAL", flush=True)
-    print("="*70, flush=True)
-    print(f"Símbolo: {SYMBOL}", flush=True)
-    print(f"Diretório: {OUT_DIR}", flush=True)
-    print("="*70, flush=True)
+    print("="*70)
+    print("🚀 DataManager V54 FINAL CORRIGIDO")
+    print("="*70)
+    print(f"Símbolo: {SYMBOL}")
+    print(f"Período: {START_DT.strftime('%Y-%m-%d')} até {END_DT.strftime('%Y-%m-%d')}")
+    print(f"Diretório: {OUT_DIR}")
+    print("="*70)
     
-    # ============================================================
-    # PASSO 1: VERIFICAR CSVs
-    # ============================================================
+    # Inicia servidor HTTP em background
+    http_thread = threading.Thread(target=start_http_server, daemon=True)
+    http_thread.start()
+    time.sleep(1)
     
-    print("\n>>> PASSO 1: Verificando CSVs...", flush=True)
+    # PASSO 1: Verificar se CSV 15m já existe
+    print("\n>>> PASSO 1: Verificando CSVs existentes...")
     
-    required_tfs = ['15m', '30m', '1h', '4h', '8h', '1d']
-    csv_paths = {}
-    all_exist = True
-    
-    for tf in required_tfs:
-        csv_path = os.path.join(OUT_DIR, f"{SYMBOL}_{tf}.csv")
-        if os.path.exists(csv_path):
-            size_mb = os.path.getsize(csv_path) / (1024*1024)
-            print(f"    ✅ {tf:3s}: {size_mb:.2f} MB", flush=True)
-            csv_paths[tf] = csv_path
+    if os.path.exists(CSV_15M_PATH):
+        df_15m = pd.read_csv(CSV_15M_PATH)
+        print(f"    ✅ 15m já existe: {len(df_15m)} linhas, {len(df_15m.columns)} colunas")
+        
+        if len(df_15m.columns) == 18:
+            print("    ✅ Estrutura correta (18 colunas)")
         else:
-            print(f"    ❌ {tf:3s}: NÃO ENCONTRADO", flush=True)
-            all_exist = False
+            print(f"    ⚠️ Estrutura diferente ({len(df_15m.columns)} colunas)")
+            os.remove(CSV_15M_PATH)
+            df_15m = None
+    else:
+        df_15m = None
+        print("    ❌ 15m não encontrado, será gerado")
     
-    if not all_exist:
-        print("\n    📥 BAIXANDO...", flush=True)
-        try:
-            baixar_e_gerar_csvs()
+    # PASSO 2: Download de aggTrades se necessário
+    if df_15m is None:
+        print("\n>>> PASSO 2: Download de aggTrades...")
+        
+        dates = generate_date_range(START_DT, END_DT)
+        total_dates = len(dates)
+        print(f"    {total_dates} dias")
+        
+        if os.path.exists(CSV_AGG_PATH):
+            os.remove(CSV_AGG_PATH)
+        
+        session = requests.Session()
+        success_count = 0
+        first_write = True
+        
+        for i, date in enumerate(dates, 1):
+            print(f"    [{i}/{total_dates}] {date.strftime('%Y-%m-%d')}", end=" ", flush=True)
             
-            csv_paths = {}
-            for tf in required_tfs:
-                csv_path = os.path.join(OUT_DIR, f"{SYMBOL}_{tf}.csv")
-                if os.path.exists(csv_path):
-                    csv_paths[tf] = csv_path
+            df = download_daily_file(SYMBOL, date, session)
+            
+            if df is not None:
+                df_processed = process_binance_data(df)
+                
+                if df_processed is not None and not df_processed.empty:
+                    df_processed.to_csv(CSV_AGG_PATH, mode='a', header=first_write, index=False)
+                    first_write = False
+                    success_count += 1
+                    print(f"✓ {len(df_processed):,} trades", flush=True)
+                    del df, df_processed
                 else:
-                    print(f"    ❌ {tf} não gerado!", flush=True)
-                    return
-        except Exception as e:
-            print(f"    ❌ ERRO: {e}", flush=True)
+                    print("⚠️", flush=True)
+            else:
+                print("⚠️", flush=True)
+            
+            time.sleep(random.uniform(0.3, 1.0))
+        
+        session.close()
+        
+        print(f"\n>>> Download: {success_count}/{total_dates} dias")
+        
+        if success_count == 0:
+            print("❌ Nenhum dado baixado!")
             return
-    
-    print(f"\n    ✅ {len(csv_paths)} CSVs OK!", flush=True)
-    
-    # ============================================================
-    # PASSO 2: ZIP CSVs
-    # ============================================================
-    
-    print(f"\n>>> PASSO 2: ZIP CSVs...", flush=True)
-    
-    with zipfile.ZipFile(ZIP_CSV_PATH, "w", zipfile.ZIP_DEFLATED) as z:
-        for tf, path in csv_paths.items():
-            z.write(path, arcname=os.path.basename(path))
-    
-    zip_size = os.path.getsize(ZIP_CSV_PATH) / (1024 * 1024)
-    print(f"    ✅ {ZIP_CSV_PATH} ({zip_size:.2f} MB)", flush=True)
-    
-    # ============================================================
-    # PASSO 3: ADICIONAR MULTIFRAME
-    # ============================================================
-    
-    print(f"\n>>> PASSO 3: Multiframe...", flush=True)
-    
-    csv_15m_path = csv_paths['15m']
-    df_15m = pd.read_csv(csv_15m_path)
-    print(f"    15m: {len(df_15m)} candles", flush=True)
-    
-    if df_15m['ts'].dtype != 'int64':
-        df_15m['ts'] = df_15m['ts'].astype('int64')
-    
-    for tf in ['30m', '1h', '4h', '8h', '1d']:
-        csv_tf_path = csv_paths[tf]
-        df_tf = pd.read_csv(csv_tf_path)
         
-        print(f"    {tf}: {len(df_tf)} candles", flush=True)
-        
-        if df_tf['ts'].dtype != 'int64':
-            df_tf['ts'] = df_tf['ts'].astype('int64')
-        
-        df_tf = feature_engine(df_tf)
-        
-        feature_cols_tf = [c for c in df_tf.columns if c not in [
-            'ts', 'open', 'high', 'low', 'close', 'volume',
-            'taker_buy_base', 'taker_buy_quote', 'taker_sell_base', 'quote_volume',
-            'trades', 'close_time', 'ignore', 'buy_vol', 'sell_vol', 'delta',
-            'buy_vol_agg', 'sell_vol_agg', 'total_vol_agg', 'cum_delta',
-            'price_range', 'absorcao', 'vpin'
-        ]]
-        
-        rename_map = {col: f'ctx_{tf}_{col}' for col in feature_cols_tf}
-        df_tf_ctx = df_tf[['ts'] + feature_cols_tf].rename(columns=rename_map)
-        
-        df_15m = pd.merge_asof(
-            df_15m.sort_values('ts'),
-            df_tf_ctx.sort_values('ts'),
-            on='ts',
-            direction='backward'
-        )
-        
-        print(f"        ✅ {len(feature_cols_tf)} ctx_{tf}_*", flush=True)
+        # PASSO 3: Gerar CSV 15m
+        print("\n>>> PASSO 3: Gerando CSV 15m...")
+        df_15m = gerar_15m_tratado(CSV_AGG_PATH, CSV_15M_PATH)
     
-    ctx_cols = [c for c in df_15m.columns if c.startswith('ctx_')]
-    if ctx_cols:
-        df_15m[ctx_cols] = df_15m[ctx_cols].fillna(method='ffill')
-    
-    print(f"\n    ✅ {len(ctx_cols)} colunas contexto", flush=True)
-    print(f"    ✅ Shape: {df_15m.shape}", flush=True)
-    
-    # ============================================================
-    # PASSO 4: TREINO
-    # ============================================================
-    
-    print(f"\n>>> PASSO 4: Treino V27...", flush=True)
-    
+    # PASSO 4: Treinar modelo
+    print("\n>>> PASSO 4: Treinando modelo...")
     modelo, scaler, kmeans, feat_cols = treinar_modelo_v27(df_15m, OUT_DIR)
     
-    # ============================================================
-    # PASSO 5: SALVAR PKLs
-    # ============================================================
+    if modelo is None:
+        print("❌ Treino falhou!")
+    else:
+        print("✅ Treino concluído!")
     
-    print(f"\n>>> PASSO 5: Salvando PKLs...", flush=True)
-    
-    pkl_modelo = os.path.join(OUT_DIR, "SISTEMA_K6_FINAL.pkl")
-    pkl_scaler = os.path.join(OUT_DIR, "scaler_regimes.pkl")
-    pkl_kmeans = os.path.join(OUT_DIR, "kmeans_regimes.pkl")
-    
-    joblib.dump(modelo, pkl_modelo)
-    joblib.dump(scaler, pkl_scaler)
-    joblib.dump(kmeans, pkl_kmeans)
-    
-    # ⚠️ GRAVAÇÃO PERMANENTE (fsync)
-    for pkl_path in [pkl_modelo, pkl_scaler, pkl_kmeans]:
-        try:
-            with open(pkl_path, 'rb') as f:
-                os.fsync(f.fileno())
-        except Exception:
-            pass
-    
-    print(f"    ✅ {pkl_modelo}", flush=True)
-    print(f"    ✅ {pkl_scaler}", flush=True)
-    print(f"    ✅ {pkl_kmeans}", flush=True)
-    
-    # Validação
-    print("\n    🔍 VALIDANDO...", flush=True)
-    try:
-        modelo_teste = joblib.load(pkl_modelo)
-        scaler_teste = joblib.load(pkl_scaler)
-        kmeans_teste = joblib.load(pkl_kmeans)
+    # PASSO 5: Criar ZIP
+    print("\n>>> PASSO 5: Criando ZIP...")
+    with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(CSV_15M_PATH, arcname="PENDLEUSDT_15m.csv")
         
-        print(f"    ✅ Modelo: {type(modelo_teste).__name__}", flush=True)
-        print(f"    ✅ Scaler: {scaler_teste.n_features_in_} features", flush=True)
-        print(f"    ✅ KMeans: {kmeans_teste.n_clusters} clusters", flush=True)
-    except Exception as e:
-        print(f"    🚨 ERRO: {e}", flush=True)
+        model_path = os.path.join(OUT_DIR, "modelo_xgb.pkl")
+        if os.path.exists(model_path):
+            z.write(model_path, arcname="modelo_xgb.pkl")
+        
+        scaler_path = os.path.join(OUT_DIR, "scaler_regimes.pkl")
+        if os.path.exists(scaler_path):
+            z.write(scaler_path, arcname="scaler_regimes.pkl")
+        
+        kmeans_path = os.path.join(OUT_DIR, "kmeans_regimes.pkl")
+        if os.path.exists(kmeans_path):
+            z.write(kmeans_path, arcname="kmeans_regimes.pkl")
     
-    features_path = os.path.join(OUT_DIR, "feature_names.txt")
-    with open(features_path, 'w') as f:
-        f.write("\n".join(feat_cols))
-    print(f"    ✅ {len(feat_cols)} features", flush=True)
+    zip_size = os.path.getsize(ZIP_PATH) / (1024*1024)
+    print(f">>> ZIP criado: {zip_size:.2f} MB")
     
-    # ============================================================
-    # PASSO 6: ZIP PKLs
-    # ============================================================
-    
-    print(f"\n>>> PASSO 6: ZIP PKLs...", flush=True)
-    
-    with zipfile.ZipFile(ZIP_PKL_PATH, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(pkl_modelo, arcname="SISTEMA_K6_FINAL.pkl")
-        z.write(pkl_scaler, arcname="scaler_regimes.pkl")
-        z.write(pkl_kmeans, arcname="kmeans_regimes.pkl")
-        z.write(features_path, arcname="feature_names.txt")
-    
-    zip_size = os.path.getsize(ZIP_PKL_PATH) / (1024 * 1024)
-    print(f"    ✅ {ZIP_PKL_PATH} ({zip_size:.2f} MB)", flush=True)
-    
-    # ============================================================
-    # PASSO 7: UPLOAD CATBOX
-    # ============================================================
-    
-    print(f"\n>>> PASSO 7: Upload CatBox...", flush=True)
-    
+    # PASSO 6: Upload para CatBox
+    print("\n>>> PASSO 6: Upload para CatBox...")
     try:
-        print("    Enviando CSVs...", flush=True)
-        link_csvs = upload_catbox(ZIP_CSV_PATH)
-        print(f"    ✅ CSVs: {link_csvs}", flush=True)
+        link = upload_catbox(ZIP_PATH)
+        print("="*70)
+        print(f"🔗 LINK PARA DOWNLOAD: {link}")
+        print("="*70)
     except Exception as e:
-        print(f"    ❌ Erro CSVs: {e}", flush=True)
-        link_csvs = "ERRO"
+        print(f"❌ Erro no upload: {e}")
+        print(">>> Servidor HTTP mantido ativo para download local")
     
-    try:
-        print("    Enviando PKLs...", flush=True)
-        link_pkls = upload_catbox(ZIP_PKL_PATH)
-        print(f"    ✅ PKLs: {link_pkls}", flush=True)
-    except Exception as e:
-        print(f"    ❌ Erro PKLs: {e}", flush=True)
-        link_pkls = "ERRO"
-    
-    # ============================================================
-    # FINALIZADO
-    # ============================================================
-    
-    print("\n" + "="*70, flush=True)
-    print("✅ COMPLETO!", flush=True)
-    print("="*70, flush=True)
-    print(f"📦 CSVs: {link_csvs}", flush=True)
-    print(f"📦 PKLs: {link_pkls}", flush=True)
-    print("="*70, flush=True)
+    # Manter servidor ativo
+    print("\n>>> Servidor mantido ativo...")
+    while True:
+        time.sleep(3600)
 
 if __name__ == "__main__":
     main()
