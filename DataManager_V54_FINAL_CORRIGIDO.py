@@ -321,7 +321,9 @@ def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
         colsample_bytree=0.8,
         random_state=42,
         n_jobs=-1,
-        eval_metric='logloss'
+        tree_method='hist',  # ⭐ IGUAL V27
+        eval_metric='logloss',
+        use_label_encoder=False  # ⭐ IGUAL V27
     )
     
     if sample_weight_train is not None:
