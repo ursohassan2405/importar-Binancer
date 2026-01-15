@@ -187,7 +187,7 @@ def detectar_regimes_mercado_v25(df, n_regimes=4, out_dir=OUT_DIR):
         print(f"    Features disponíveis: {regime_features}", flush=True)
         print(f"    Features faltando: {set(REGIME_FEATURES_OBRIGATORIAS) - set(regime_features)}", flush=True)
         
-        # Fallback (NÃO DEVE ACONTECER!)
+        # Fallback (NAO DEVE ACONTECER!)
         if not regime_features:
             df['temp_ret'] = df['close'].pct_change(20)
             regime_features = ['temp_ret']
@@ -265,7 +265,7 @@ def treinar_modelo_v27(df_15m, out_dir=OUT_DIR):
     # 4. PREPARAR MATRIZ X, y
     print(">>> Preparando matriz de treino...", flush=True)
     
-    # Remover colunas não-feature
+    # Remover colunas nao-feature
     non_feat = {
         "open", "high", "low", "close", "volume",
         "ts", "quote_volume", "trades",
@@ -478,7 +478,7 @@ class DownloadHandler(SimpleHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
-                self.wfile.write(b'ZIP PKLs ainda não criado')
+                self.wfile.write(b'ZIP PKLs ainda nao criado')
         
         else:
             self.send_response(200)
@@ -538,7 +538,7 @@ def main():
     csv_15m_path = os.path.join(OUT_DIR, f"{SYMBOL}_15m.csv")
     
     if not os.path.exists(csv_15m_path):
-        print(f"❌ ERRO: CSV 15m não encontrado: {csv_15m_path}", flush=True)
+        print(f"❌ ERRO: CSV 15m nao encontrado: {csv_15m_path}", flush=True)
         print("   Execute primeiro o DataManager original para gerar os CSVs.", flush=True)
         return
     
