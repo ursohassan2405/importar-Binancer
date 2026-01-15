@@ -64,12 +64,20 @@ CANDLES_FUTURO = 5
 # =========================
 def slope_regression(series, window):
     """Calcula slope via regressão linear"""
+    # Aceita Series ou array
+    if isinstance(series, pd.Series):
+        values = series.values
+        index = series.index
+    else:
+        values = series
+        index = None
+    
     slopes = []
-    for i in range(len(series)):
+    for i in range(len(values)):
         if i < window - 1:
             slopes.append(np.nan)
         else:
-            y = series[i - window + 1:i + 1]
+            y = values[i - window + 1:i + 1]
             x = np.arange(window)
             valid = ~np.isnan(y)
             if valid.sum() < 2:
@@ -78,7 +86,11 @@ def slope_regression(series, window):
                 lr = LinearRegression()
                 lr.fit(x[valid].reshape(-1, 1), y[valid])
                 slopes.append(lr.coef_[0])
-    return pd.Series(slopes, index=series.index)
+    
+    if index is not None:
+        return pd.Series(slopes, index=index)
+    else:
+        return np.array(slopes)
 
 def realized_vol(close, window=20):
     """Volatilidade realizada"""
@@ -128,8 +140,8 @@ def feature_engine(df):
     df["dist_ema20"] = (df["close"].shift(1) - df["ema20"])
     
     # 4. Slopes, Vol, ATR
-    df["slope20"] = slope_regression(df["close"].values, 20)
-    df["slope50"] = slope_regression(df["close"].values, 50)
+    df["slope20"] = slope_regression(df["close"], 20)
+    df["slope50"] = slope_regression(df["close"], 50)
     df["vol_realized"] = realized_vol(df["close"])
     df["vol_yz"] = yang_zhang(df)
     
@@ -521,7 +533,16 @@ def gerar_15m_tratado_incremental(csv_agg_path, csv_15m_path, timeframe_min=15, 
     except Exception:
         pass
     
-    print(f"    ✅ {len(df_15m)} candles → {csv_15m_path}", flush=True)
+    # ⚠️ ESTATÍSTICAS DAS BALEIAS (DEBUG)
+    total_candles = len(df_15m)
+    candles_com_baleias = (df_15m['buy_vol_agg'] + df_15m['sell_vol_agg'] > 0).sum()
+    pct_baleias = (candles_com_baleias / total_candles * 100) if total_candles > 0 else 0
+    
+    print(f"    ✅ {total_candles} candles → {csv_15m_path}", flush=True)
+    print(f"    🐋 Candles com baleias: {candles_com_baleias}/{total_candles} ({pct_baleias:.1f}%)", flush=True)
+    
+    if pct_baleias < 10:
+        print(f"    ⚠️ AVISO: Poucas baleias detectadas! Verificar threshold $500", flush=True)
 
 def baixar_e_gerar_csvs():
     """Download e geração (V51)"""
@@ -563,7 +584,18 @@ def baixar_e_gerar_csvs():
     print(f"\n    {success_count}/{total_dates} OK", flush=True)
     
     if success_count == 0:
-        raise Exception("Nenhum dado!")
+        raise Exception("❌ NENHUM DADO! Download falhou completamente!")
+    
+    if success_count < total_dates * 0.5:
+        print(f"    ⚠️ AVISO: Apenas {success_count}/{total_dates} dias baixados!", flush=True)
+        print(f"    Isso pode afetar a qualidade do modelo!", flush=True)
+    
+    # ⚠️ VALIDAÇÃO: Verificar se aggTrades TEM dados
+    df_test = pd.read_csv(CSV_PATH, nrows=100)
+    if 'side' not in df_test.columns:
+        raise Exception("❌ CSV NÃO É aggTrades! Faltam colunas de trade!")
+    
+    print(f"    ✅ Validação: CSV é aggTrades (coluna 'side' presente)", flush=True)
     
     # Gerar timeframes
     print("\n>>> Gerando timeframes...", flush=True)
@@ -582,6 +614,16 @@ def baixar_e_gerar_csvs():
         if os.path.exists(csv_tf_path):
             os.remove(csv_tf_path)
         gerar_15m_tratado_incremental(CSV_PATH, csv_tf_path, timeframe_min=tf_min, min_val_usd=500, chunksize=200_000)
+        
+        # ⚠️ CRÍTICO: Verificar gravação
+        if not os.path.exists(csv_tf_path):
+            raise Exception(f"❌ {csv_tf_path} NÃO gravado!")
+        
+        # Sync
+        try:
+            os.sync()
+        except:
+            pass
 
 # =========================
 # CATBOX UPLOAD
