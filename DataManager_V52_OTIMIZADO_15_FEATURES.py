@@ -438,20 +438,35 @@ def gerar_multiframe(csv_15m_path, out_dir=OUT_DIR):
 # ============================================================
 
 class DownloadHandler(SimpleHTTPRequestHandler):
+# No DataManager_V52_OTIMIZADO_15_FEATURES.py, localize a classe SimpleHTTPRequestHandler
+# Garanta que o self.wfile.write esteja exatamente assim:
+
     def do_GET(self):
-        if self.path == '/download/csvs':
+        if self.path == '/download_csv':
             if os.path.exists(ZIP_CSV_PATH):
                 self.send_response(200)
-                self.send_header('Content-Type', 'application/zip')
-                self.send_header('Content-Disposition', f'attachment; filename="{SYMBOL}_csvs.zip"')
+                self.send_header('Content-type', 'application/zip')
+                self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(ZIP_CSV_PATH)}"')
                 self.end_headers()
                 with open(ZIP_CSV_PATH, 'rb') as f:
                     self.wfile.write(f.read())
             else:
                 self.send_response(404)
                 self.end_headers()
-                self.wfile.write(b'ZIP CSVs ainda não criado')
-        
+                self.wfile.write(b'ZIP CSVs ainda nao criado') # <--- LINHA 453 CORRIGIDA
+
+        elif self.path == '/download_pkl':
+            if os.path.exists(ZIP_PKL_PATH):
+                self.send_response(200)
+                self.send_header('Content-type', 'application/zip')
+                self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(ZIP_PKL_PATH)}"')
+                self.end_headers()
+                with open(ZIP_PKL_PATH, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b'ZIP PKLs ainda nao criado')        
         elif self.path == '/download/pkls':
             if os.path.exists(ZIP_PKL_PATH):
                 self.send_response(200)
