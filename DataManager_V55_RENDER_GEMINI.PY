@@ -191,7 +191,8 @@ def process_binance_data(df):
 def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=500, chunksize=200_000):
     """
     Converte o CSV de aggTrades (ts,price,qty,side) para um dataset de timeframe.
-    COPIADO EXATO DO V51.
+    MANTIDO: Cabeçalho V55 Original + Saneamento.
+    AJUSTADO: Sinal de Delta Limpo (Baleias > 500) do V51.
     """
     print(f">>> Gerando {timeframe_min}m tratado...", flush=True)
 
@@ -243,8 +244,10 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
                     st["low"] = float(price)
                 st["close"] = float(price)
 
+            # Volume Total (Mercado todo)
             st["volume"] += float(qty)
 
+            # FILTRO DE BALEIAS (O segredo do V51)
             if whale:
                 if side == 0:
                     st["buy_vol"] += float(qty)
@@ -254,7 +257,6 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
     if not buckets:
         raise RuntimeError(f"Nenhum bucket {timeframe_min}m gerado!")
 
-# 1. Transforma os buckets em uma lista de linhas
     rows = []
     for bms in sorted(buckets.keys()):
         st = buckets[bms]
@@ -264,26 +266,25 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
             st["high"],
             st["low"],
             st["close"],
-            st["volume"],     # Volume total do candle (com sardinhas)
-            st["buy_vol"],    # Volume de compra FILTRADO (só baleias > 500)
-            st["sell_vol"],   # Volume de venda FILTRADO (só baleias > 500)
-            st["buy_vol"] - st["sell_vol"] # Delta FILTRADO (Sinal limpo do V51)
+            st["volume"],
+            st["buy_vol"],
+            st["sell_vol"],
+            st["buy_vol"] - st["sell_vol"], # Delta Limpo (Baleia)
         ])
 
-    # 2. Cria o DataFrame (Uma única vez é o suficiente)
-    cols = ["ts", "open", "high", "low", "close", "volume", "buy_vol", "sell_vol", "delta"]
-    df_tf = pd.DataFrame(rows, columns=cols)
+    df_tf = pd.DataFrame(rows, columns=[
+        "ts", "open", "high", "low", "close",
+        "volume", "buy_vol", "sell_vol", "delta"
+    ])
 
-    # 3. ENRIQUECIMENTO V1 (DNA DO V51)
-    # Aqui garantimos que os Takers que o modelo lê sejam os das baleias
+    # ENRIQUECIMENTO V1 (DNA DO V51)
     df_tf["buy_vol_agg"]   = df_tf["buy_vol"]
     df_tf["sell_vol_agg"]  = df_tf["sell_vol"]
     df_tf["total_vol_agg"] = df_tf["buy_vol_agg"] + df_tf["sell_vol_agg"]
 
     df_tf["taker_buy_base"]  = df_tf["buy_vol_agg"]
     df_tf["taker_sell_base"] = df_tf["sell_vol_agg"]
-    
-    # ... segue o restante do enriquecimento (absorção, vpin, etc)    df_tf["taker_buy_quote"] = df_tf["taker_buy_base"] * df_tf["close"]
+    df_tf["taker_buy_quote"] = df_tf["taker_buy_base"] * df_tf["close"]
 
     df_tf["quote_volume"] = df_tf["volume"] * df_tf["close"]
     df_tf["trades"] = 0
@@ -298,7 +299,7 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
         df_tf["total_vol_agg"].replace(0, 1e-9)
     )
 
-    # Saneamento
+    # Saneamento (CORRIGIDO: Agora todas as colunas existem)
     num_cols = [
         "open","high","low","close",
         "volume","buy_vol","sell_vol","delta",
@@ -307,13 +308,14 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
         "quote_volume","cum_delta","price_range","absorcao","vpin"
     ]
     for c in num_cols:
-        df_tf[c] = pd.to_numeric(df_tf[c], errors="coerce").replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
+        if c in df_tf.columns:
+            df_tf[c] = pd.to_numeric(df_tf[c], errors="coerce").replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
 
     df_tf["ts"] = pd.to_numeric(df_tf["ts"], errors="coerce").fillna(0).astype("int64")
     df_tf["trades"] = pd.to_numeric(df_tf["trades"], errors="coerce").fillna(0).astype("int64")
     df_tf["close_time"] = pd.to_numeric(df_tf["close_time"], errors="coerce").fillna(0).astype("int64")
 
-    # Ordem V1
+    # Ordem V1 Final
     cols_v1 = [
         "ts",
         "open","high","low","close",
@@ -331,7 +333,7 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
     df_tf = df_tf[cols_v1]
     df_tf.to_csv(csv_tf_path, index=False)
     
-    # fsync
+    # fsync original
     try:
         with open(csv_tf_path, 'rb') as f:
             os.fsync(f.fileno())
@@ -340,7 +342,6 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
 
     print(f"    ✅ {len(df_tf)} candles → {csv_tf_path}", flush=True)
     return df_tf
-
 # =============================================================================
 # FEATURE ENGINE (COPIADO EXATO DO V27)
 # =============================================================================
