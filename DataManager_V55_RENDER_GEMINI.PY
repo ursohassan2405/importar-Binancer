@@ -50,7 +50,7 @@ SYMBOL = "PENDLEUSDT"
 
 # ⚠️ TESTE: 10 DIAS
 START_DT = datetime(2025, 1, 1, 0, 0, 0)
-END_DT = datetime(2025, 1, 10, 23, 59, 59)
+END_DT = datetime(2025, 12, 31, 23, 59, 59)
 
 # 🔴 PRODUÇÃO: 1 ANO (descomentar)
 # START_DT = datetime(2025, 1, 1, 0, 0, 0)
