@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # DataManager_V55_RENDER.py
-# PENDLEUSDT – Binance Data Vision + TREINO V27 EXATO
+# RUNEUSDT – Binance Data Vision + TREINO V27 EXATO
 # 
 # COMPONENTES:
 # 1. Download aggTrades (COPIADO DO V51)
@@ -46,7 +46,7 @@ from xgboost import XGBClassifier
 # =============================================================================
 # CONFIGURAÇÃO
 # =============================================================================
-SYMBOL = "PENDLEUSDT"
+SYMBOL = "RUNEUSDT"
 
 # ⚠️ TESTE: 10 DIAS
 START_DT = datetime(2025, 1, 1, 0, 0, 0)
@@ -918,7 +918,7 @@ class DownloadHandler(SimpleHTTPRequestHandler):
             
             html = f'''<html>
 <body style="font-family:Arial;padding:50px;text-align:center;">
-<h1>🚀 PENDLEUSDT DataManager V55</h1>
+<h1>🚀 RUNEUSDT DataManager V55</h1>
 <hr>
 <h2>CSVs (15m, 30m, 1h, 4h, 8h, 1d): {csv_status}</h2>
 {csv_link}
