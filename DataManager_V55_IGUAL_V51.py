@@ -225,14 +225,14 @@ def process_binance_data(df):
 # =============================================================================
 # GERAÇÃO DE TIMEFRAMES (CÓPIA EXATA DO V51 + OTIMIZAÇÃO MEMÓRIA)
 # =============================================================================
-def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=500, chunksize=100_000):
+def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=2000, chunksize=100_000):
     """
     Converte o CSV de aggTrades (ts,price,qty,side) para um dataset de timeframe.
     
     CÓPIA EXATA DO V51 - MESMA LÓGICA:
     - bucket = floor(datetime UTC, Xmin)
     - OHLCV do preço/qty
-    - baleias: val_usd = price*qty >= min_val_usd (500 USD - IGUAL V51!)
+    - baleias: val_usd = price*qty >= min_val_usd (2000 USD - IGUAL V51!)
       buy_vol: soma qty das baleias com side == 0
       sell_vol: soma qty das baleias com side == 1
       delta = buy_vol - sell_vol
