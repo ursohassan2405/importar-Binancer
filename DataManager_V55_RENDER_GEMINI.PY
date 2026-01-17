@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # DataManager_V55_RENDER.py
-# RUNEUSDT – Binance Data Vision + TREINO V27 EXATO
+# ETHUSDT – Binance Data Vision + TREINO V27 EXATO
 # 
 # COMPONENTES:
 # 1. Download aggTrades (COPIADO DO V51)
@@ -46,7 +46,7 @@ from xgboost import XGBClassifier
 # =============================================================================
 # CONFIGURAÇÃO
 # =============================================================================
-SYMBOL = "RUNEUSDT"
+SYMBOL = "ETHUSDT"
 
 # ⚠️ TESTE: 10 DIAS
 START_DT = datetime(2025, 1, 1, 0, 0, 0)
@@ -188,11 +188,11 @@ def process_binance_data(df):
 # =============================================================================
 # GERAÇÃO DE TIMEFRAMES (COPIADO DO V51)
 # =============================================================================
-def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=1000, chunksize=200_000):
+def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=4000, chunksize=200_000):
     """
     Converte o CSV de aggTrades (ts,price,qty,side) para um dataset de timeframe.
     MANTIDO: Cabeçalho V55 Original + Saneamento.
-    AJUSTADO: Sinal de Delta Limpo (Baleias > 1000) do V51.
+    AJUSTADO: Sinal de Delta Limpo (Baleias > 4000) do V51.
     """
     print(f">>> Gerando {timeframe_min}m tratado...", flush=True)
 
@@ -918,7 +918,7 @@ class DownloadHandler(SimpleHTTPRequestHandler):
             
             html = f'''<html>
 <body style="font-family:Arial;padding:50px;text-align:center;">
-<h1>🚀 RUNEUSDT DataManager V55</h1>
+<h1>🚀 ETHUSDT DataManager V55</h1>
 <hr>
 <h2>CSVs (15m, 30m, 1h, 4h, 8h, 1d): {csv_status}</h2>
 {csv_link}
