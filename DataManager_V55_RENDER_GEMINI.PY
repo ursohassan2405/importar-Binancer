@@ -188,11 +188,11 @@ def process_binance_data(df):
 # =============================================================================
 # GERAÇÃO DE TIMEFRAMES (COPIADO DO V51)
 # =============================================================================
-def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=3000, chunksize=200_000):
+def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=1000, chunksize=200_000):
     """
     Converte o CSV de aggTrades (ts,price,qty,side) para um dataset de timeframe.
     MANTIDO: Cabeçalho V55 Original + Saneamento.
-    AJUSTADO: Sinal de Delta Limpo (Baleias > 300) do V51.
+    AJUSTADO: Sinal de Delta Limpo (Baleias > 1000) do V51.
     """
     print(f">>> Gerando {timeframe_min}m tratado...", flush=True)
 
