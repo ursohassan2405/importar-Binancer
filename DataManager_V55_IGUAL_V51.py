@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # DataManager_V55_RENDER.py
-# ETHUSDT – Binance Data Vision + TREINO V27 EXATO
+# RENDERUSDT – Binance Data Vision + TREINO V27 EXATO
 # 
 # COMPONENTES:
 # 1. Download aggTrades (COPIADO DO V51)
@@ -47,7 +47,7 @@ from catboost import CatBoostClassifier
 # =============================================================================
 # CONFIGURAÇÃO
 # =============================================================================
-SYMBOL = "ETHUSDT"
+SYMBOL = "RENDERUSDT"
 
 # ⚠️ TESTE: 10 DIAS
 START_DT = datetime(2025, 1, 1, 0, 0, 0)
@@ -1165,7 +1165,7 @@ class DownloadHandler(SimpleHTTPRequestHandler):
             
             html = f'''<html>
 <body style="font-family:Arial;padding:50px;text-align:center;">
-<h1>🚀 ETHUSDT DataManager V55</h1>
+<h1>🚀 RENDERUSDT DataManager V55</h1>
 <hr>
 <h2>CSVs (15m, 30m, 1h, 4h, 8h, 1d): {csv_status}</h2>
 {csv_link}
