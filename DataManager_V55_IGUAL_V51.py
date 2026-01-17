@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
-# DataManager_V55_RENDER.py
-# RENDERUSDT – Binance Data Vision + TREINO V27 EXATO
+# DataManager_V55_PENDLE.py
+# PENDLEUSDT – Binance Data Vision + TREINO V27 EXATO
 # 
 # COMPONENTES:
 # 1. Download aggTrades (COPIADO DO V51)
@@ -47,7 +47,7 @@ from catboost import CatBoostClassifier
 # =============================================================================
 # CONFIGURAÇÃO
 # =============================================================================
-SYMBOL = "RENDERUSDT"
+SYMBOL = "PENDLEUSDT"
 
 # ⚠️ TESTE: 10 DIAS
 START_DT = datetime(2025, 1, 1, 0, 0, 0)
@@ -58,7 +58,7 @@ END_DT = datetime(2025, 12, 31, 23, 59, 59)
 # END_DT = datetime(2025, 12, 31, 23, 59, 59)
 
 # =============================================================================
-# RENDER PERSISTENT DISK - CORREÇÃO COMPLETA
+# PENDLE PERSISTENT DISK - CORREÇÃO COMPLETA
 # =============================================================================
 # Primeiro tenta criar /data se não existir (Render permite)
 try:
@@ -1165,7 +1165,7 @@ class DownloadHandler(SimpleHTTPRequestHandler):
             
             html = f'''<html>
 <body style="font-family:Arial;padding:50px;text-align:center;">
-<h1>🚀 RENDERUSDT DataManager V55</h1>
+<h1>🚀 PENDLEUSDT DataManager V55</h1>
 <hr>
 <h2>CSVs (15m, 30m, 1h, 4h, 8h, 1d): {csv_status}</h2>
 {csv_link}
@@ -1209,7 +1209,7 @@ def main():
     time.sleep(1)
     
     print("\n" + "="*70)
-    print("🚀 DataManager V55 - RENDER")
+    print("🚀 DataManager V55 - PENDLE")
     print("="*70)
     print(f"Símbolo: {SYMBOL}")
     print(f"Período: {START_DT.strftime('%Y-%m-%d')} até {END_DT.strftime('%Y-%m-%d')}")
