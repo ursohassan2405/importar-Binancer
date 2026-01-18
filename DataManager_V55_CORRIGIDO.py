@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
-# DataManager_V55_RENDER.py
-# ETHUSDT – Binance Data Vision + TREINO V27 EXATO
+# DataManager_V55_PENDLE.py
+# PENDLEUSDT – Binance Data Vision + TREINO V27 EXATO
 # 
 # COMPONENTES:
 # 1. Download aggTrades (COPIADO DO V51)
@@ -42,22 +42,23 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import f1_score, accuracy_score, classification_report
 from lightgbm import LGBMClassifier
 from xgboost import XGBClassifier
+from catboost import CatBoostClassifier
 
 # =============================================================================
 # CONFIGURAÇÃO
 # =============================================================================
-SYMBOL = "ETHUSDT"
+SYMBOL = "PENDLEUSDT"
 
-# ⚠️ TESTE: 10 DIAS
+# ⚠️ IGUAL V51: Termina em 30/12
 START_DT = datetime(2025, 1, 1, 0, 0, 0)
-END_DT = datetime(2025, 12, 31, 23, 59, 59)
+END_DT = datetime(2025, 12, 30, 23, 59, 59)  # V51 usa 30, não 31!
 
 # 🔴 PRODUÇÃO: 1 ANO (descomentar)
 # START_DT = datetime(2025, 1, 1, 0, 0, 0)
 # END_DT = datetime(2025, 12, 31, 23, 59, 59)
 
 # =============================================================================
-# RENDER PERSISTENT DISK - CORREÇÃO COMPLETA
+# PENDLE PERSISTENT DISK - CORREÇÃO COMPLETA
 # =============================================================================
 # Primeiro tenta criar /data se não existir (Render permite)
 try:
@@ -222,23 +223,34 @@ def process_binance_data(df):
     return df_processed.dropna()
 
 # =============================================================================
-# GERAÇÃO DE TIMEFRAMES (COPIADO DO V51 + OTIMIZAÇÃO MEMÓRIA)
+# GERAÇÃO DE TIMEFRAMES (CÓPIA EXATA DO V51 + OTIMIZAÇÃO MEMÓRIA)
 # =============================================================================
-def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=4000, chunksize=50_000):
+def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=500, chunksize=200_000):
     """
     Converte o CSV de aggTrades (ts,price,qty,side) para um dataset de timeframe.
-    MANTIDO: Cabeçalho V55 Original + Saneamento.
-    AJUSTADO: Sinal de Delta Limpo (Baleias > 4000) do V51.
-    OTIMIZAÇÃO: chunksize reduzido para 50k (ETH e ativos grandes)
+    
+    CÓPIA EXATA DO V51 - MESMA LÓGICA:
+    - bucket = floor(datetime UTC, Xmin)
+    - OHLCV do preço/qty
+    - baleias: val_usd = price*qty >= min_val_usd (500 USD - IGUAL V51!)
+      buy_vol: soma qty das baleias com side == 0
+      sell_vol: soma qty das baleias com side == 1
+      delta = buy_vol - sell_vol
+    
+    OTIMIZAÇÃO: gc.collect() periódico para evitar estouro de memória
     """
     import gc
     
-    print(f">>> Gerando {timeframe_min}m tratado...", flush=True)
+    print(f">>> Gerando {timeframe_min}m tratado (lógica V51 exata)...", flush=True)
+    print(f"    Filtro baleia: >= ${min_val_usd} USD (V51=500)", flush=True)
 
+    # Estrutura incremental por bucket (IGUAL V51)
     buckets = {}
     chunks_processados = 0
 
+    # Lê em chunks (IGUAL V51)
     for chunk in pd.read_csv(csv_agg_path, chunksize=chunksize):
+        # Garante tipos (IGUAL V51)
         chunk["ts"] = pd.to_numeric(chunk["ts"], errors="coerce")
         chunk["price"] = pd.to_numeric(chunk["price"], errors="coerce")
         chunk["qty"] = pd.to_numeric(chunk["qty"], errors="coerce")
@@ -248,14 +260,17 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
         if chunk.empty:
             continue
 
+        # Bucket UTC (IGUAL V51)
         dt = pd.to_datetime(chunk["ts"].astype("int64"), unit="ms", utc=True)
         bucket_dt = dt.dt.floor(f"{timeframe_min}min")
         bucket_ms = (bucket_dt.astype("int64") // 10**6).astype("int64")
         chunk = chunk.assign(bucket_ms=bucket_ms)
 
+        # Whale flag (IGUAL V51)
         val_usd = chunk["price"] * chunk["qty"]
         is_whale = val_usd >= float(min_val_usd)
 
+        # Itera em linhas (IGUAL V51 - mantém ordem cronológica!)
         for ts_ms, price, qty, side, bms, whale in zip(
             chunk["ts"].astype("int64"),
             chunk["price"].astype(float),
@@ -275,38 +290,47 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
                     "volume": 0.0,
                     "buy_vol": 0.0,
                     "sell_vol": 0.0,
+                    "trades": 0,  # NOVO: Contador de trades
                 }
                 buckets[bms] = st
             else:
+                # OHLC (IGUAL V51)
                 if price > st["high"]:
                     st["high"] = float(price)
                 if price < st["low"]:
                     st["low"] = float(price)
                 st["close"] = float(price)
 
-            # Volume Total (Mercado todo)
+            # Volume total (IGUAL V51)
             st["volume"] += float(qty)
+            
+            # Contador de trades (NOVO)
+            st["trades"] += 1
 
-            # FILTRO DE BALEIAS (O segredo do V51)
+            # Baleias (IGUAL V51)
             if whale:
                 if side == 0:
                     st["buy_vol"] += float(qty)
                 else:
                     st["sell_vol"] += float(qty)
         
-        # OTIMIZAÇÃO MEMÓRIA: Limpar chunk e forçar gc a cada 10 chunks
+        # OTIMIZAÇÃO MEMÓRIA: Limpar chunk e gc periódico
         chunks_processados += 1
         del chunk
+        
         if chunks_processados % 10 == 0:
             gc.collect()
-            print(f"    Chunks processados: {chunks_processados}", flush=True)
+            print(f"    Chunks: {chunks_processados}, Buckets: {len(buckets)}", flush=True)
 
-    # Libera memória final antes de montar DataFrame
+    # Libera memória antes de montar DataFrame
     gc.collect()
 
     if not buckets:
         raise RuntimeError(f"Nenhum bucket {timeframe_min}m gerado!")
 
+    print(f"    Montando DataFrame com {len(buckets)} buckets...", flush=True)
+
+    # Ordena por tempo e monta rows (IGUAL V51 + trades)
     rows = []
     for bms in sorted(buckets.keys()):
         st = buckets[bms]
@@ -319,15 +343,27 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
             st["volume"],
             st["buy_vol"],
             st["sell_vol"],
-            st["buy_vol"] - st["sell_vol"], # Delta Limpo (Baleia)
+            st["buy_vol"] - st["sell_vol"],  # delta
+            st["trades"],  # NOVO
         ])
 
+    # Libera buckets
+    del buckets
+    gc.collect()
+
+    # DataFrame (IGUAL V51 + trades)
     df_tf = pd.DataFrame(rows, columns=[
         "ts", "open", "high", "low", "close",
-        "volume", "buy_vol", "sell_vol", "delta"
+        "volume", "buy_vol", "sell_vol", "delta", "trades"
     ])
+    del rows
+    gc.collect()
 
-    # ENRIQUECIMENTO V1 (DNA DO V51)
+    # ============================================================
+    # ENRIQUECIMENTO V1 (IGUAL V51 - EXATO)
+    # ============================================================
+    
+    # Aliases compatíveis com V1
     df_tf["buy_vol_agg"]   = df_tf["buy_vol"]
     df_tf["sell_vol_agg"]  = df_tf["sell_vol"]
     df_tf["total_vol_agg"] = df_tf["buy_vol_agg"] + df_tf["sell_vol_agg"]
@@ -336,10 +372,12 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
     df_tf["taker_sell_base"] = df_tf["sell_vol_agg"]
     df_tf["taker_buy_quote"] = df_tf["taker_buy_base"] * df_tf["close"]
 
+    # Campos V1 comuns
     df_tf["quote_volume"] = df_tf["volume"] * df_tf["close"]
-    df_tf["trades"] = 0
+    # trades já está preenchido com contagem real!
     df_tf["close_time"] = df_tf["ts"] + (timeframe_min * 60 * 1000) - 1
 
+    # Métricas adicionais (IGUAL V51)
     df_tf = df_tf.sort_values("ts").reset_index(drop=True)
     df_tf["cum_delta"] = df_tf["delta"].cumsum()
 
@@ -349,7 +387,7 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
         df_tf["total_vol_agg"].replace(0, 1e-9)
     )
 
-    # Saneamento (CORRIGIDO: Agora todas as colunas existem)
+    # Saneamento (IGUAL V51)
     num_cols = [
         "open","high","low","close",
         "volume","buy_vol","sell_vol","delta",
@@ -882,10 +920,38 @@ def treinar_um_target(target_col, df, outdir):
     except Exception as e:
         print(f"    [XGB] erro: {e}")
 
+    # CatBoost
+    try:
+        model_cat = CatBoostClassifier(
+            iterations=400,
+            learning_rate=0.03,
+            depth=6,
+            auto_class_weights="Balanced",
+            verbose=0,
+            random_seed=42
+        )
+
+        model_cat.fit(X_train, y_train, sample_weight=sw_train)
+        preds = model_cat.predict(X_test)
+        f1 = f1_score(y_test, preds, average="macro")
+        resultados.append(("CAT", f1, model_cat))
+        print(f"    >>> CAT F1={f1:.4f}")
+
+    except Exception as e:
+        print(f"    [CAT] erro: {e}")
+
     if not resultados:
         raise RuntimeError(f"Nenhum modelo treinou para {target_col}")
 
-    melhor_nome, melhor_f1, melhor_modelo = max(resultados, key=lambda x: x[1])
+    # Ordenar por F1 e mostrar ranking
+    resultados_ordenados = sorted(resultados, key=lambda x: x[1], reverse=True)
+    print(f"\n    📊 RANKING {target_col}:")
+    for i, (nome, f1, _) in enumerate(resultados_ordenados, 1):
+        marca = "🥇" if i == 1 else ("🥈" if i == 2 else "🥉")
+        print(f"       {marca} {i}º {nome}: F1={f1:.4f}")
+
+    melhor_nome, melhor_f1, melhor_modelo = resultados_ordenados[0]
+    print(f"\n    ✅ VENCEDOR: {melhor_nome} (F1={melhor_f1:.4f})")
 
     # Salvar
     os.makedirs(outdir, exist_ok=True)
@@ -968,7 +1034,7 @@ def gerar_todos_timeframes():
     
     for tf_name, tf_min in timeframes.items():
         csv_tf_path = os.path.join(OUT_DIR, f"{SYMBOL}_{tf_name}.csv")
-        gerar_timeframe_tratado(CSV_AGG_PATH, csv_tf_path, timeframe_min=tf_min)
+        gerar_timeframe_tratado(CSV_AGG_PATH, csv_tf_path, timeframe_min=tf_min, min_val_usd=500, chunksize=200_000)
         csv_paths[tf_name] = csv_tf_path
         
         # fsync
@@ -1099,7 +1165,7 @@ class DownloadHandler(SimpleHTTPRequestHandler):
             
             html = f'''<html>
 <body style="font-family:Arial;padding:50px;text-align:center;">
-<h1>🚀 ETHUSDT DataManager V55</h1>
+<h1>🚀 PENDLEUSDT DataManager V55</h1>
 <hr>
 <h2>CSVs (15m, 30m, 1h, 4h, 8h, 1d): {csv_status}</h2>
 {csv_link}
@@ -1143,7 +1209,7 @@ def main():
     time.sleep(1)
     
     print("\n" + "="*70)
-    print("🚀 DataManager V55 - RENDER")
+    print("🚀 DataManager V55 - PENDLE")
     print("="*70)
     print(f"Símbolo: {SYMBOL}")
     print(f"Período: {START_DT.strftime('%Y-%m-%d')} até {END_DT.strftime('%Y-%m-%d')}")
