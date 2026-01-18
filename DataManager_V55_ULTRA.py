@@ -40,10 +40,20 @@ from catboost import CatBoostClassifier
 SYMBOL = os.environ.get("SYMBOL", "PENDLEUSDT")
 DAYS = int(os.environ.get("DAYS", "365"))
 
-# IMPORTANTE: Usar 30/12 para igualar ao V51 (31/12 causa 96 candles extras)
-END_DT = datetime(2025, 12, 30, 23, 59, 59)
+# =============================================================================
+# CONFIGURAÇÃO DE DATAS - DINÂMICA
+# =============================================================================
+# Calcula automaticamente: últimos DAYS dias até ontem (dados mais recentes disponíveis)
+# Binance Data Vision tem delay de ~1 dia
+
+from datetime import date
+TODAY = datetime.now()
+END_DT = datetime(TODAY.year, TODAY.month, TODAY.day) - timedelta(days=1)  # Ontem
+END_DT = END_DT.replace(hour=23, minute=59, second=59)
 START_DT = END_DT - timedelta(days=DAYS-1)
 START_DT = START_DT.replace(hour=0, minute=0, second=0)
+
+print(f"📅 Período: {START_DT.strftime('%Y-%m-%d')} → {END_DT.strftime('%Y-%m-%d')} ({DAYS} dias)", flush=True)
 
 # =============================================================================
 # DISCO RENDER - VERIFICAÇÃO ROBUSTA
@@ -596,11 +606,20 @@ def main():
     # Servidor
     start_server()
     
-    # 1. Download
-    if not os.path.exists(CSV_AGG) or os.path.getsize(CSV_AGG) < 1000:
-        baixar_dados()
+    # 1. Download - SEMPRE baixar de novo para garantir dados corretos
+    # Verificar se cache existe E tem tamanho razoável (>100MB para 365 dias)
+    min_size = 100 * 1024 * 1024  # 100MB mínimo esperado
+    
+    if os.path.exists(CSV_AGG):
+        cache_size = os.path.getsize(CSV_AGG)
+        if cache_size < min_size:
+            print(f"⚠️ Cache pequeno ({cache_size//1024//1024}MB < 100MB), re-baixando...", flush=True)
+            os.remove(CSV_AGG)
+            baixar_dados()
+        else:
+            print(f"📁 Cache OK: {CSV_AGG} ({cache_size//1024//1024}MB)", flush=True)
     else:
-        print(f"📁 Cache: {CSV_AGG}", flush=True)
+        baixar_dados()
     
     # 2. Timeframes
     paths = gerar_todos_tfs()
