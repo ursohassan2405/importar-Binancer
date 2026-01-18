@@ -223,18 +223,59 @@ def gerar_tf(tf_min):
     
     df = pd.DataFrame(data, columns=['ts','open','high','low','close','volume','buy_vol_agg','sell_vol_agg','delta'])
     
-    # Enriquecimento
-    df['quote_volume'] = df['volume'] * df['close']
+    # Aliases (igual V51)
+    df['buy_vol'] = df['buy_vol_agg']
+    df['sell_vol'] = df['sell_vol_agg']
     df['total_vol_agg'] = df['buy_vol_agg'] + df['sell_vol_agg']
-    df['cum_delta'] = df['delta'].cumsum()
-    df['vpin'] = (df['buy_vol_agg'] - df['sell_vol_agg']).abs() / (df['total_vol_agg'] + 1e-9)
-    df['price_range'] = df['high'] - df['low']
-    df['absorcao'] = df['delta'] / (df['price_range'].replace(0, 1e-9))
+    
     df['taker_buy_base'] = df['buy_vol_agg']
     df['taker_sell_base'] = df['sell_vol_agg']
-    df['taker_buy_quote'] = df['buy_vol_agg'] * df['close']
-    df['close_time'] = df['ts'] + (tf_min * 60000) - 1
+    df['taker_buy_quote'] = df['taker_buy_base'] * df['close']
+    
+    # Campos V1 comuns
+    df['quote_volume'] = df['volume'] * df['close']
     df['trades'] = 0
+    df['close_time'] = df['ts'] + (tf_min * 60000) - 1
+    
+    # Métricas adicionais (igual V51)
+    df = df.sort_values('ts').reset_index(drop=True)
+    df['cum_delta'] = df['delta'].cumsum()
+    df['price_range'] = df['high'] - df['low']
+    df['absorcao'] = df['delta'] / (df['price_range'].replace(0, 1e-9))
+    df['vpin'] = (df['buy_vol_agg'] - df['sell_vol_agg']).abs() / (df['total_vol_agg'].replace(0, 1e-9))
+    
+    # Saneamento (IGUAL V51)
+    num_cols = [
+        "open","high","low","close",
+        "volume","buy_vol","sell_vol","delta",
+        "buy_vol_agg","sell_vol_agg","total_vol_agg",
+        "taker_buy_base","taker_sell_base","taker_buy_quote",
+        "quote_volume","cum_delta","price_range","absorcao","vpin"
+    ]
+    for c in num_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
+    
+    df["ts"] = pd.to_numeric(df["ts"], errors="coerce").fillna(0).astype("int64")
+    df["trades"] = pd.to_numeric(df["trades"], errors="coerce").fillna(0).astype("int64")
+    df["close_time"] = pd.to_numeric(df["close_time"], errors="coerce").fillna(0).astype("int64")
+    
+    # Ordem V1 (IGUAL V51)
+    cols_v1 = [
+        "ts",
+        "open","high","low","close",
+        "volume","quote_volume","trades",
+        "taker_buy_base","taker_sell_base","taker_buy_quote",
+        "buy_vol_agg","sell_vol_agg","total_vol_agg",
+        "delta","cum_delta",
+        "close_time",
+        "vpin","price_range","absorcao"
+    ]
+    for c in cols_v1:
+        if c not in df.columns:
+            df[c] = 0.0
+    
+    df = df[cols_v1]
     
     return df
 
