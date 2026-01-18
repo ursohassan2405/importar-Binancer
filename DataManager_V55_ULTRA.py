@@ -133,7 +133,7 @@ def download_day(symbol, date, session):
 
 def baixar_dados():
     """Download todos os dias - progress mínimo."""
-    print(f"📥 Download {DAYS} dias...", end=" ", flush=True)
+    print(f"📥 Download {DAYS} dias...", flush=True)
     
     session = requests.Session()
     dates = [START_DT + timedelta(days=i) for i in range(DAYS)]
@@ -149,12 +149,17 @@ def baixar_dados():
             ok += 1
             del df
         
+        # Progress a cada 10% ou 30 dias
+        if (i+1) % max(1, DAYS//10) == 0 or (i+1) % 30 == 0:
+            pct = 100 * (i+1) // DAYS
+            print(f"   📥 {i+1}/{DAYS} ({pct}%) - {ok} OK", flush=True)
+        
         if (i+1) % 50 == 0:
             gc.collect()
         time.sleep(random.uniform(0.1, 0.3))
     
     session.close()
-    print(f"✅ {ok}/{DAYS} ({time.time()-t0:.0f}s)", flush=True)
+    print(f"✅ Download completo: {ok}/{DAYS} ({time.time()-t0:.0f}s)", flush=True)
     return ok
 
 # =============================================================================
