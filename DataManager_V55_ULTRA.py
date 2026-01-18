@@ -38,20 +38,15 @@ from catboost import CatBoostClassifier
 # CONFIGURAÇÃO
 # =============================================================================
 SYMBOL = os.environ.get("SYMBOL", "PENDLEUSDT")
-DAYS = int(os.environ.get("DAYS", "365"))
 
 # =============================================================================
-# CONFIGURAÇÃO DE DATAS - DINÂMICA
+# CONFIGURAÇÃO DE DATAS - FIXAS (IGUAL V51)
 # =============================================================================
-# Calcula automaticamente: últimos DAYS dias até ontem (dados mais recentes disponíveis)
-# Binance Data Vision tem delay de ~1 dia
-
-from datetime import date
-TODAY = datetime.now()
-END_DT = datetime(TODAY.year, TODAY.month, TODAY.day) - timedelta(days=1)  # Ontem
-END_DT = END_DT.replace(hour=23, minute=59, second=59)
-START_DT = END_DT - timedelta(days=DAYS-1)
-START_DT = START_DT.replace(hour=0, minute=0, second=0)
+# CRÍTICO: Usar EXATAMENTE o mesmo período do V51 para comparação válida
+# V51 usa: 01/01/2025 a 30/12/2025
+START_DT = datetime(2025, 1, 1, 0, 0, 0)
+END_DT = datetime(2025, 12, 30, 23, 59, 59)
+DAYS = (END_DT.date() - START_DT.date()).days + 1  # 364 dias
 
 print(f"📅 Período: {START_DT.strftime('%Y-%m-%d')} → {END_DT.strftime('%Y-%m-%d')} ({DAYS} dias)", flush=True)
 
