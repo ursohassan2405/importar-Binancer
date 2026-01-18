@@ -168,45 +168,44 @@ def baixar_dados():
     return ok
 
 # =============================================================================
-# GERAÇÃO TIMEFRAME - ULTRA OTIMIZADO
+# GERAÇÃO TIMEFRAME - ULTRA OTIMIZADO PARA 512MB RAM
 # =============================================================================
 def gerar_tf(tf_min):
-    """Gera timeframe - vetorizado onde possível."""
+    """Gera timeframe - otimizado para baixa memória."""
     
     buckets = {}
-    CHUNK = 500_000  # Chunks grandes = menos overhead
+    CHUNK = 50_000  # Chunks PEQUENOS para 512MB RAM
     
     for chunk in pd.read_csv(CSV_AGG, chunksize=CHUNK,
                             dtype={'ts':'int64','price':'float32','qty':'float32','side':'int8'}):
         
-        # Bucket (vetorizado)
-        bms = (chunk['ts'].values // (tf_min * 60000)) * (tf_min * 60000)
-        prices = chunk['price'].values
-        qtys = chunk['qty'].values
-        sides = chunk['side'].values
-        whales = (prices * qtys) >= 500  # $500 min
-        
-        # Loop otimizado (necessário para OHLC correto)
-        for i in range(len(chunk)):
-            b = bms[i]
-            p, q, s, w = prices[i], qtys[i], sides[i], whales[i]
+        # Processar chunk
+        for _, row in chunk.iterrows():
+            ts = row['ts']
+            p = row['price']
+            q = row['qty']
+            s = row['side']
+            
+            b = (ts // (tf_min * 60000)) * (tf_min * 60000)
+            whale = (p * q) >= 500
             
             if b not in buckets:
-                buckets[b] = [p, p, p, p, 0.0, 0.0, 0.0]  # o,h,l,c,v,bv,sv
+                buckets[b] = [p, p, p, p, 0.0, 0.0, 0.0]
             else:
                 r = buckets[b]
-                if p > r[1]: r[1] = p  # high
-                if p < r[2]: r[2] = p  # low
-                r[3] = p  # close
+                if p > r[1]: r[1] = p
+                if p < r[2]: r[2] = p
+                r[3] = p
             
-            buckets[b][4] += q  # volume
-            if w:
+            buckets[b][4] += q
+            if whale:
                 if s == 0:
-                    buckets[b][5] += q  # buy
+                    buckets[b][5] += q
                 else:
-                    buckets[b][6] += q  # sell
+                    buckets[b][6] += q
         
         del chunk
+        gc.collect()
     
     gc.collect()
     
@@ -319,11 +318,11 @@ def calc_slope(series, w):
     return result
 
 # =============================================================================
-# FEATURE ENGINE - 186 FEATURES
+# FEATURE ENGINE - 186 FEATURES (OTIMIZADO 512MB)
 # =============================================================================
 def feature_engine(df):
-    """Gera TODAS as 186 features."""
-    df = df.copy()
+    """Gera TODAS as 186 features - otimizado para baixa memória."""
+    # NÃO fazer copy - trabalhar in-place
     
     # === PRICE ACTION ===
     df['range'] = df['high'] - df['low']
@@ -331,21 +330,25 @@ def feature_engine(df):
     df['upper_wick'] = df['high'] - df[['open','close']].max(axis=1)
     df['lower_wick'] = df[['open','close']].min(axis=1) - df['low']
     df['range_pct'] = df['range'] / (df['close'] + 1e-9)
+    gc.collect()
     
     # === RETORNOS ===
     for p in [1,2,3,5,10,20]:
         df[f'ret{p}'] = df['close'].pct_change(p)
     df['log_ret'] = np.log(df['close'] / df['close'].shift(1))
     df['ret20_norm'] = df['ret20'] / (df['close'].rolling(20).std() + 1e-9)
+    gc.collect()
     
     # === EMAs ===
     for s in [9,20,50,100,200]:
         df[f'ema{s}'] = df['close'].ewm(span=s, adjust=False).mean()
         df[f'dist_ema{s}'] = df['close'] - df[f'ema{s}']
+    gc.collect()
     
     # === SLOPES ===
     for w in [20,50,100,200]:
         df[f'slope{w}'] = calc_slope(df['close'], w)
+    gc.collect()
     
     # === ATR / VOLATILIDADE ===
     tr = pd.concat([df['high']-df['low'], 
