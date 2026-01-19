@@ -50,7 +50,7 @@ from catboost import CatBoostClassifier
 SYMBOL = "PENDLEUSDT"
 
 # ⚠️ TESTE: 1 ANO
-START_DT = datetime(2025, 1, 1, 0, 0, 0)
+START_DT = datetime(2025, 12, 1, 0, 0, 0)
 END_DT = datetime(2025, 12, 31, 23, 59, 59)
 
 # 🔴 PRODUÇÃO: 1 ANO (descomentar)
