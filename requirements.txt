@@ -4,5 +4,7 @@ requests
 ccxt
 xgboost
 lightgbm
-scikit-learn>=1.3.0
+catboost==1.2.8
+scikit-learn==1.2.2
 joblib
+
