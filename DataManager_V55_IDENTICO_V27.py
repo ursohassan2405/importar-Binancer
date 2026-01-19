@@ -225,14 +225,14 @@ def process_binance_data(df):
 # =============================================================================
 # GERAÇÃO DE TIMEFRAMES (CÓPIA EXATA DO V51 + OTIMIZAÇÃO MEMÓRIA)
 # =============================================================================
-def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=2000, chunksize=100_000):
+def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=500, chunksize=100_000):
     """
     Converte o CSV de aggTrades (ts,price,qty,side) para um dataset de timeframe.
     
     CÓPIA EXATA DO V51 - MESMA LÓGICA:
     - bucket = floor(datetime UTC, Xmin)
     - OHLCV do preço/qty
-    - baleias: val_usd = price*qty >= min_val_usd (2000 USD - IGUAL V51!)
+    - baleias: val_usd = price*qty >= min_val_usd (500 USD - IGUAL V51!)
       buy_vol: soma qty das baleias com side == 0
       sell_vol: soma qty das baleias com side == 1
       delta = buy_vol - sell_vol
@@ -730,6 +730,13 @@ def feature_engine(df):
         df["aggression_buy"] = df["taker_buy_base"].shift(1)
         df["aggression_sell"] = (df["volume"] - df["taker_buy_base"]).shift(1)  # ← CORREÇÃO ADICIONADA
         df["aggression_delta"] = (df["taker_buy_base"] - (df["volume"] - df["taker_buy_base"])).shift(1)
+    
+    # 6. RSI 14 (ADICIONADO - FALTAVA!)
+    delta_price = df["close"].diff()
+    gain = delta_price.where(delta_price > 0, 0).rolling(14).mean()
+    loss = (-delta_price.where(delta_price < 0, 0)).rolling(14).mean()
+    rs = gain / (loss + 1e-9)
+    df["rsi_14"] = 100 - (100 / (1 + rs))
     
     return df
 
@@ -1768,12 +1775,19 @@ def main():
     print(f"    15m carregado: {len(df_15m)} candles", flush=True)
     
     df_15m = feature_engine(df_15m)
+    print(f"    Após feature_engine: {len(df_15m.columns)} colunas", flush=True)
     df_15m = adicionar_features_avancadas(df_15m)
+    print(f"    Após adicionar_features_avancadas: {len(df_15m.columns)} colunas", flush=True)
     df_15m = adicionar_fractais_elliott(df_15m)
+    print(f"    Após adicionar_fractais_elliott: {len(df_15m.columns)} colunas", flush=True)
     df_15m = adicionar_vwap(df_15m)
+    print(f"    Após adicionar_vwap: {len(df_15m.columns)} colunas", flush=True)
     df_15m = adicionar_micro_squeeze(df_15m)
+    print(f"    Após adicionar_micro_squeeze: {len(df_15m.columns)} colunas", flush=True)
     df_15m = adicionar_inside_nr(df_15m)
+    print(f"    Após adicionar_inside_nr: {len(df_15m.columns)} colunas", flush=True)
     df_15m = adicionar_zscore_intrabar(df_15m)
+    print(f"    Após adicionar_zscore_intrabar: {len(df_15m.columns)} colunas", flush=True)
     
     # Detectar regimes completos (V27)
     df_15m = detectar_regimes(df_15m)
