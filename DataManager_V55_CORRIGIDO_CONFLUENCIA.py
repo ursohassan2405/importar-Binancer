@@ -50,7 +50,7 @@ from catboost import CatBoostClassifier
 SYMBOL = "PENDLEUSDT"
 
 # ⚠️ TESTE: 1 ANO
-START_DT = datetime(2025, 12, 1, 0, 0, 0)
+START_DT = datetime(2025, 1, 1, 0, 0, 0)
 END_DT = datetime(2025, 12, 31, 23, 59, 59)
 
 # 🔴 PRODUÇÃO: 1 ANO (descomentar)
@@ -1480,7 +1480,8 @@ def treinar_um_target(target_col, df, outdir):
         
         print("    >>> Treinando STACK (pode demorar)...", flush=True)
         
-        # Base estimators com menos iterações (já que são 3)
+        # Base estimators com 2 modelos (CatBoost removido por incompatibilidade)
+        # CatBoost 1.2.8 incompatível com sklearn>=1.3.0 (__sklearn_tags__)
         base_estimators = [
             ('lgbm', LGBMClassifier(
                 n_estimators=200, learning_rate=0.03, max_depth=-1,
@@ -1490,11 +1491,8 @@ def treinar_um_target(target_col, df, outdir):
                 n_estimators=200, learning_rate=0.03, max_depth=6,
                 tree_method="hist", eval_metric="logloss", verbosity=0,
                 scale_pos_weight=spw if n_classes == 2 else None
-            )),
-            ('cat', CatBoostClassifier(
-                iterations=200, learning_rate=0.03, depth=6,
-                auto_class_weights="Balanced", verbose=0
             ))
+            # ('cat', CatBoostClassifier(...))  # ← REMOVIDO (sklearn tags incompatível)
         ]
         
         # Meta-learner simples
