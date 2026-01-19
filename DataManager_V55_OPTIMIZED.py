@@ -56,7 +56,7 @@ from catboost import CatBoostClassifier
 SYMBOL = os.environ.get("SYMBOL", "PENDLEUSDT")
 
 # Período - pode ser configurado via env vars
-DAYS = int(os.environ.get("DAYS", "365"))
+DAYS = int(os.environ.get("DAYS", "5"))
 
 # Calcular datas
 END_DT = datetime(2025, 12, 31, 23, 59, 59)
