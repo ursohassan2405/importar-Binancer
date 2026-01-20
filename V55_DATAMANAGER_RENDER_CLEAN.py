@@ -7,8 +7,8 @@
 #
 # ██ CONFIGURAÇÃO - MODIFIQUE AQUI ██
 SYMBOL = "PENDLEUSDT"
-START_DT_STR = "2024-01-01"  # Data início (YYYY-MM-DD)
-END_DT_STR = "2025-01-15"    # Data fim (YYYY-MM-DD)
+START_DT_STR = "2025-01-01"  # Data início (YYYY-MM-DD)
+END_DT_STR = "2025-12-31"    # Data fim (YYYY-MM-DD)
 MIN_WHALE_USD = 500          # Filtro whale em USD
 
 # ██ CONFIGURAÇÃO DE TREINO (SEM INPUTS INTERATIVOS) ██
