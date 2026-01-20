@@ -3055,15 +3055,405 @@ def aplicar_ajustes_treino(df):
 df_all = df_all.replace([np.inf, -np.inf], np.nan).dropna()
 print("✔ Limpeza final aplicada — df_all livre de NaN/Inf.")
 
+# =============================================================================
+# BLOCO FINAL — TARGET_K
+# • Mede ACERTO e ERRO do modelo para ALTA e BAIXA
+# • NÃO SABE = apenas corte de confiança (não entra na métrica)
+# • Split temporal 70 / 10 / 20 (val é reservado, não usado aqui)
+# =============================================================================
+
+from pandas.api.types import is_numeric_dtype
+from lightgbm import LGBMClassifier
+from xgboost import XGBClassifier
+# from catboost import CatBoostClassifier  # REMOVIDO - incompatível Render
+
+# -------------------------------------------------------------------------
+# CONFIG
+# -------------------------------------------------------------------------
+KS = [1, 2, 3, 4, 5]
+
+LOW_NS  = 0.48
+HIGH_NS = 0.52
+
+# -------------------------------------------------------------------------
+# FEATURES (somente numéricas, sem targets e sem OHLCV bruto)
+# -------------------------------------------------------------------------
+excluir_cols = {
+    "open", "high", "low", "close", "volume",
+    "close_time", "quote_volume", "trades",
+    "taker_buy_base", "taker_buy_quote",
+    "ignore"
+}
+
+feature_cols = [
+    c for c in df_all.columns
+    if is_numeric_dtype(df_all[c])
+    and not c.startswith("target_")
+    and c not in excluir_cols
+]
+
+if "close" not in df_all.columns:
+    raise KeyError("df_all precisa conter a coluna 'close'.")
+
+X = df_all[feature_cols].values
+close = df_all["close"].values
+n = len(df_all)
+
+if n < 1000:
+    raise ValueError(f"df_all muito pequeno para TARGET_K (n={n}).")
+
+# -------------------------------------------------------------------------
+# SPLIT TEMPORAL 70 / 10 / 20 COM GAP (evita leakage)
+# -------------------------------------------------------------------------
+GAP_K = 15  # Gap de segurança entre períodos
+
+i_train = int(n * 0.70)
+i_val   = int(n * 0.80)   # reserva 10% (val)
+# teste = 20% final
+
+# Com gap: descarta candles entre períodos
+X_train = X[:i_train]
+X_val   = X[i_train + GAP_K : i_val]
+X_test  = X[i_val + GAP_K:]
+
+close_train = close[:i_train]
+close_val   = close[i_train + GAP_K : i_val]
+close_test  = close[i_val + GAP_K:]
+
+print(f">>> Split K com GAP={GAP_K}: Train={len(X_train)}, Val={len(X_val)}, Test={len(X_test)}")
+
+# -------------------------------------------------------------------------
+# FABRICA DE MODELOS (sempre instância NOVA por fit) - SEM CATBOOST
+# -------------------------------------------------------------------------
+def make_model(nome_modelo: str):
+    if nome_modelo == "LGBM":
+        return LGBMClassifier(n_estimators=300, learning_rate=0.03, n_jobs=-1, verbose=-1)
+    if nome_modelo == "XGB":
+        return XGBClassifier(
+            n_estimators=300, learning_rate=0.03, max_depth=6,
+            subsample=0.7, colsample_bytree=0.7,
+            tree_method="hist", eval_metric="logloss", verbosity=0
+        )
+    # CatBoost removido - incompatível com Render
+    raise ValueError(f"Modelo desconhecido: {nome_modelo}")
+
+NOMES_MODELOS = ["LGBM", "XGB"]  # CAT removido
+
+# -------------------------------------------------------------------------
+# FUNÇÃO: gera y direcional para horizonte k (sem leakage)
+# y = 1 se close[t+k] > close[t], usando apenas pontos válidos
+# -------------------------------------------------------------------------
+def build_y_directional(close_array: np.ndarray, k: int) -> np.ndarray:
+    fut = np.roll(close_array, -k)
+    y = (fut[:-k] > close_array[:-k]).astype(int)
+    return y
 
 # =============================================================================
-# 🔧 BACKTEST TARGET_K REMOVIDO PARA RENDER
+# EXECUÇÃO — TARGET_K COM NÃO SABE (corte 48–52)
 # =============================================================================
-# Bloco 3051-3449 removido (análise de acurácia K)
-# TODO O TREINO está preservado no MÓDULO 6 e BLOCO 5.5 abaixo
-# =============================================================================
-print(">>> Backtest TARGET_K removido - economizando ~20 min no Render")
+for nome_modelo in NOMES_MODELOS:
 
+    print("\n" + "=" * 110)
+    print(f"MODELO: {nome_modelo}  |  TESTE REAL (20%)  |  TARGET_K (COM NÃO SABE)")
+    print("=" * 110)
+    print("Candle | ALTA (%) | ERRO ALTA (%) | BAIXA (%) | ERRO BAIXA (%) | Decisão")
+    print("-" * 110)
+
+    # cache por K PARA ESTE MODELO (usado no DELTA logo abaixo)
+    acertos_por_k = {}  # {k: {"alta_pct":..., "erro_alta_pct":..., "baixa_pct":..., "erro_baixa_pct":...}}
+
+    for k in KS:
+
+        # -----------------------------
+        # TREINO (sem últimos k pontos)
+        # -----------------------------
+        y_train = build_y_directional(close_train, k)
+        modelo = make_model(nome_modelo)
+        modelo.fit(X_train[:-k], y_train)
+
+        # -----------------------------
+        # TESTE (sem últimos k pontos)
+        # -----------------------------
+        y_real = build_y_directional(close_test, k)
+        proba = modelo.predict_proba(X_test[:-k])[:, 1]
+
+        # decisões por corte NÃO SABE
+        pred_alta = proba > HIGH_NS
+        pred_baixa = proba < LOW_NS
+        pred_ns = ~(pred_alta | pred_baixa)
+
+        # métricas condicionais: quando o modelo disse ALTA/BAIXA, acertou?
+        # ALTA: acerto se y_real == 1
+        tot_alta = int(np.sum(pred_alta))
+        ac_alta = int(np.sum(pred_alta & (y_real == 1)))
+        er_alta = int(np.sum(pred_alta & (y_real == 0)))
+
+        # BAIXA: acerto se y_real == 0
+        tot_baixa = int(np.sum(pred_baixa))
+        ac_baixa = int(np.sum(pred_baixa & (y_real == 0)))
+        er_baixa = int(np.sum(pred_baixa & (y_real == 1)))
+
+        alta_pct = (ac_alta / tot_alta * 100.0) if tot_alta > 0 else 0.0
+        erro_alta_pct = (er_alta / tot_alta * 100.0) if tot_alta > 0 else 0.0
+
+        baixa_pct = (ac_baixa / tot_baixa * 100.0) if tot_baixa > 0 else 0.0
+        erro_baixa_pct = (er_baixa / tot_baixa * 100.0) if tot_baixa > 0 else 0.0
+
+        # decisão "humana" (apenas informativa): escolhe o lado com maior acerto condicional
+        # (você pode trocar depois; aqui não interfere em métrica)
+        if tot_alta == 0 and tot_baixa == 0:
+            decisao = "NÃO SABE"
+        else:
+            if alta_pct > baixa_pct:
+                decisao = "ALTA"
+            elif baixa_pct > alta_pct:
+                decisao = "BAIXA"
+            else:
+                decisao = "NÃO SABE"
+
+        # guarda para DELTA (sem inventar nomes)
+        acertos_por_k[k] = {
+            "alta_pct": float(alta_pct),
+            "erro_alta_pct": float(erro_alta_pct),
+            "baixa_pct": float(baixa_pct),
+            "erro_baixa_pct": float(erro_baixa_pct),
+        }
+
+        print(
+            f"k{k:<5} | "
+            f"{alta_pct:>7.2f}% | "
+            f"{erro_alta_pct:>12.2f}% | "
+            f"{baixa_pct:>8.2f}% | "
+            f"{erro_baixa_pct:>13.2f}% | "
+            f"{decisao}"
+        )
+
+    print("-" * 110)
+    print(f"FIM DO MODELO: {nome_modelo}")
+    print("-" * 110)
+
+    # =============================================================================
+    # BLOCO DERIVADO — DELTA ENTRE HORIZONTES (K vs K-1) — BASE (COM NÃO SABE)
+    # =============================================================================
+    print("\n" + "=" * 110)
+    print(f"DELTA ENTRE HORIZONTES — K vs K-1 | MODELO: {nome_modelo}  (BASE)")
+    print("=" * 110)
+    print("K  | Δ ALTA (%) | Δ ERRO ALTA | Δ BAIXA (%) | Δ ERRO BAIXA")
+    print("-" * 110)
+
+    for k in KS:
+        if k == 1:
+            print("K1 |    —        |     —       |     —        |      —")
+            continue
+
+        prev = acertos_por_k[k - 1]
+        curr = acertos_por_k[k]
+
+        d_alta  = curr["alta_pct"]       - prev["alta_pct"]
+        d_ea    = curr["erro_alta_pct"]  - prev["erro_alta_pct"]
+        d_baixa = curr["baixa_pct"]      - prev["baixa_pct"]
+        d_eb    = curr["erro_baixa_pct"] - prev["erro_baixa_pct"]
+
+        print(
+            f"K{k} | "
+            f"{d_alta:+8.2f}% | "
+            f"{d_ea:+9.2f}% | "
+            f"{d_baixa:+9.2f}% | "
+            f"{d_eb:+10.2f}%"
+        )
+
+    print("-" * 110)
+    print(f"FIM — DELTA K vs K-1 | MODELO: {nome_modelo}  (BASE)")
+    print("-" * 110)
+
+# =============================================================================
+# BLOCO FINAL — TARGET_K COM CONFIANÇA (SEM NÃO SABE)
+# • Modelo sempre responde ALTA ou BAIXA
+# • Confiança = max(p, 1-p)
+# • Relatório por MODELO, por K (K1..K5), por FAIXA DE CONFIANÇA
+# • Quantidades e percentuais (compras/vendas, acertos/erros)
+# • Split temporal 70 / 10 / 20
+# =============================================================================
+
+CONF_BINS = [
+    (0.50, 0.55),
+    (0.55, 0.60),
+    (0.60, 0.65),
+    (0.65, 0.70),
+    (0.70, 0.75),
+    (0.75, 1.01),
+]
+
+for nome_modelo in NOMES_MODELOS:
+
+    print("\n" + "=" * 140)
+    print(f"MODELO: {nome_modelo}  |  TESTE REAL (20%)  |  COM CONFIANÇA (SEM NÃO SABE)")
+    print("=" * 140)
+    print("Confiança | K  | Operações | Compras | Acertos C | Erros C | Acerto C (%) | "
+          "Vendas | Acertos V | Erros V | Acerto V (%)")
+    print("-" * 140)
+
+    # cache por K PARA DELTA deste bloco
+    # aqui "acerto_compra_pct" = acerto condicional quando modelo decidiu ALTA (compras)
+    # e "acerto_venda_pct" = acerto condicional quando modelo decidiu BAIXA (vendas)
+    acertos_por_k_conf = {}  # {k: {"acerto_compra_pct":..., "acerto_venda_pct":...}}
+
+    for k in KS:
+
+        # TREINO
+        y_train = build_y_directional(close_train, k)
+        modelo = make_model(nome_modelo)
+        modelo.fit(X_train[:-k], y_train)
+
+        # TESTE
+        y_real = build_y_directional(close_test, k)
+        proba = modelo.predict_proba(X_test[:-k])[:, 1]
+
+        decisao_alta = proba >= 0.5
+        decisao_baixa = ~decisao_alta
+
+        conf = np.maximum(proba, 1.0 - proba)
+
+        # acumuladores para resumo global do K (todas faixas)
+        tot_c = tot_v = 0
+        ac_c = er_c = 0
+        ac_v = er_v = 0
+
+        for cmin, cmax in CONF_BINS:
+
+            mask = (conf >= cmin) & (conf < cmax)
+            if int(np.sum(mask)) == 0:
+                continue
+
+            compras = decisao_alta & mask
+            vendas  = decisao_baixa & mask
+
+            a_c = int(np.sum(compras & (y_real == 1)))
+            e_c = int(np.sum(compras & (y_real == 0)))
+
+            a_v = int(np.sum(vendas & (y_real == 0)))
+            e_v = int(np.sum(vendas & (y_real == 1)))
+
+            total_mask = int(np.sum(mask))
+            total_compras = int(np.sum(compras))
+            total_vendas  = int(np.sum(vendas))
+
+            total_c_bin = a_c + e_c
+            total_v_bin = a_v + e_v
+
+            p_c = (a_c / total_c_bin * 100.0) if total_c_bin > 0 else 0.0
+            p_v = (a_v / total_v_bin * 100.0) if total_v_bin > 0 else 0.0
+
+            print(
+                f"{int(cmin*100):02d}-{int(cmax*100):02d}%    | "
+                f"K{k} | "
+                f"{total_mask:10d} | "
+                f"{total_compras:7d} | "
+                f"{a_c:9d} | "
+                f"{e_c:7d} | "
+                f"{p_c:10.2f}% | "
+                f"{total_vendas:7d} | "
+                f"{a_v:9d} | "
+                f"{e_v:7d} | "
+                f"{p_v:10.2f}%"
+            )
+
+            # soma para resumo global do K
+            tot_c += total_c_bin
+            tot_v += total_v_bin
+            ac_c += a_c
+            er_c += e_c
+            ac_v += a_v
+            er_v += e_v
+
+        # resumo global do K (todas as faixas, sem não sabe)
+        acerto_compra_pct = (ac_c / tot_c * 100.0) if tot_c > 0 else 0.0
+        acerto_venda_pct  = (ac_v / tot_v * 100.0) if tot_v > 0 else 0.0
+
+        acertos_por_k_conf[k] = {
+            "acerto_compra_pct": float(acerto_compra_pct),
+            "acerto_venda_pct": float(acerto_venda_pct),
+        }
+
+    print("-" * 140)
+    print(f"FIM DO MODELO: {nome_modelo}")
+    print("-" * 140)
+
+    # =============================================================================
+    # BLOCO DERIVADO — DELTA ENTRE HORIZONTES (K vs K-1) — COM CONFIANÇA
+    # =============================================================================
+    print("\n" + "=" * 110)
+    print(f"DELTA ENTRE HORIZONTES — K vs K-1 | MODELO: {nome_modelo}  (COM CONFIANÇA)")
+    print("=" * 110)
+    print("K  | ACERTO C (%) | Δ vs K-1 | ACERTO V (%) | Δ vs K-1")
+    print("-" * 110)
+
+    prev_c = None
+    prev_v = None
+
+    for k in KS:
+        ac_c = acertos_por_k_conf[k]["acerto_compra_pct"]
+        ac_v = acertos_por_k_conf[k]["acerto_venda_pct"]
+
+        if prev_c is None:
+            dc = "  —  "
+            dv = "  —  "
+        else:
+            dc = f"{(ac_c - prev_c):+.2f}%"
+            dv = f"{(ac_v - prev_v):+.2f}%"
+
+        print(
+            f"K{k:<2} | "
+            f"{ac_c:>11.2f}% | "
+            f"{dc:>8} | "
+            f"{ac_v:>11.2f}% | "
+            f"{dv:>8}"
+        )
+
+        prev_c = ac_c
+        prev_v = ac_v
+
+    print("-" * 110)
+    print(f"FIM — DELTA K vs K-1 | MODELO: {nome_modelo}  (COM CONFIANÇA)")
+    print("-" * 110)
+
+print("\n" + "=" * 140)
+print("FIM — TARGET_K COM CONFIANÇA (RELATÓRIO INFORMATIVO)")
+print("=" * 140)
+
+# ==========================================================
+# SALVAMENTO OFICIAL DOS MODELOS K (OBRIGATÓRIO)
+# ==========================================================
+
+import joblib
+
+# Fonte da verdade: quais Ks você treinou
+# (ajuste se o nome da variável for outro)
+ks_treinados = sorted(set(ks_treinados)) if "ks_treinados" in globals() else []
+
+if not ks_treinados:
+    print(
+        "[AVISO] ks_treinados vazio no BLOCO K INFORMATIVO — "
+        "treinamento OK, seguindo pipeline."
+    )
+
+for k in ks_treinados:
+    nome_target = f"target_K{k}"
+
+    if nome_target not in modelos:
+        raise RuntimeError(
+            f"[PIPELINE] Modelo em memória ausente para {nome_target}"
+        )
+
+    caminho = os.path.join(out_dir, f"{nome_target}.pkl")
+    joblib.dump(modelos[nome_target], caminho)
+
+    print(f"[PIPELINE] Modelo salvo: {caminho}")
+
+
+# ========================================================================
+# BLOCO 6 — TREINO GLOBAL DOS TARGETS (A, B, C) + CONSOLIDADOR
+# ========================================================================
 
 print("\n===============================================================")
 print("MÓDULO 6 — TREINANDO TODOS OS TARGETS (A, B, C + REVERSÃO)")
