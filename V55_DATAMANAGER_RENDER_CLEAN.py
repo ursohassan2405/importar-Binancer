@@ -264,36 +264,49 @@ def process_binance_data(df):
 def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=500, chunksize=200_000):
     print(f">>> Gerando dataset {timeframe_min}m...", flush=True)
     buckets = {}
-    for chunk in pd.read_csv(csv_agg_path, chunksize=chunksize):
-        chunk["ts"] = pd.to_numeric(chunk["ts"], errors="coerce")
-        chunk["price"] = pd.to_numeric(chunk["price"], errors="coerce")
-        chunk["qty"] = pd.to_numeric(chunk["qty"], errors="coerce")
-        chunk["side"] = pd.to_numeric(chunk["side"], errors="coerce")
-        chunk = chunk.dropna(subset=["ts", "price", "qty", "side"])
-        if chunk.empty:
-            continue
-        dt = pd.to_datetime(chunk["ts"].astype("int64"), unit="ms", utc=True)
-        bucket_ms = (dt.dt.floor(f"{timeframe_min}min").astype("int64") // 10**6).astype("int64")
-        chunk = chunk.assign(bucket_ms=bucket_ms)
-        val_usd = chunk["price"] * chunk["qty"]
-        is_whale = val_usd >= float(min_val_usd)
-        for ts_ms, price, qty, side, bms, whale in zip(
-            chunk["ts"].astype("int64"), chunk["price"].astype(float),
-            chunk["qty"].astype(float), chunk["side"].astype(int),
-            chunk["bucket_ms"].astype("int64"), is_whale.astype(bool)
-        ):
-            st = buckets.get(bms)
-            if st is None:
-                st = {"ts": int(bms), "open": float(price), "high": float(price), "low": float(price), "close": float(price), "volume": 0.0, "buy_vol": 0.0, "sell_vol": 0.0}
-                buckets[bms] = st
-            else:
-                if price > st["high"]: st["high"] = float(price)
-                if price < st["low"]: st["low"] = float(price)
-                st["close"] = float(price)
-            st["volume"] += float(qty)
-            if whale:
-                if side == 0: st["buy_vol"] += float(qty)
-                else: st["sell_vol"] += float(qty)
+    chunks_processados = 0
+    
+    try:
+        for chunk in pd.read_csv(csv_agg_path, chunksize=chunksize):
+            chunks_processados += 1
+            if chunks_processados % 10 == 0:
+                print(f"   Processados {chunks_processados} chunks...", flush=True)
+            
+            chunk["ts"] = pd.to_numeric(chunk["ts"], errors="coerce")
+            chunk["price"] = pd.to_numeric(chunk["price"], errors="coerce")
+            chunk["qty"] = pd.to_numeric(chunk["qty"], errors="coerce")
+            chunk["side"] = pd.to_numeric(chunk["side"], errors="coerce")
+            chunk = chunk.dropna(subset=["ts", "price", "qty", "side"])
+            if chunk.empty:
+                continue
+            dt = pd.to_datetime(chunk["ts"].astype("int64"), unit="ms", utc=True)
+            bucket_ms = (dt.dt.floor(f"{timeframe_min}min").astype("int64") // 10**6).astype("int64")
+            chunk = chunk.assign(bucket_ms=bucket_ms)
+            val_usd = chunk["price"] * chunk["qty"]
+            is_whale = val_usd >= float(min_val_usd)
+            for ts_ms, price, qty, side, bms, whale in zip(
+                chunk["ts"].astype("int64"), chunk["price"].astype(float),
+                chunk["qty"].astype(float), chunk["side"].astype(int),
+                chunk["bucket_ms"].astype("int64"), is_whale.astype(bool)
+            ):
+                st = buckets.get(bms)
+                if st is None:
+                    st = {"ts": int(bms), "open": float(price), "high": float(price), "low": float(price), "close": float(price), "volume": 0.0, "buy_vol": 0.0, "sell_vol": 0.0}
+                    buckets[bms] = st
+                else:
+                    if price > st["high"]: st["high"] = float(price)
+                    if price < st["low"]: st["low"] = float(price)
+                    st["close"] = float(price)
+                st["volume"] += float(qty)
+                if whale:
+                    if side == 0: st["buy_vol"] += float(qty)
+                    else: st["sell_vol"] += float(qty)
+        
+        print(f"   Total: {chunks_processados} chunks processados", flush=True)
+        
+    except Exception as e:
+        print(f"❌ Erro processando chunks: {e}", flush=True)
+        raise
     if not buckets:
         raise RuntimeError("Nenhum bucket gerado!")
     rows = [[st["ts"], st["open"], st["high"], st["low"], st["close"], st["volume"], st["buy_vol"], st["sell_vol"], st["buy_vol"] - st["sell_vol"]] for st in [buckets[bms] for bms in sorted(buckets.keys())]]
@@ -351,6 +364,29 @@ def start_http_server():
     HTTPServer(('0.0.0.0', port), DownloadHandler).serve_forever()
 
 def extrair_dados_binance():
+    # RENDER FIX: Verificar se aggTrades já existe e está completo
+    if os.path.exists(CSV_AGG_PATH):
+        try:
+            df_check = pd.read_csv(CSV_AGG_PATH, nrows=1)
+            file_size = os.path.getsize(CSV_AGG_PATH) / (1024 * 1024)  # MB
+            if file_size > 10:  # Se arquivo tem >10MB, assume que está completo
+                print("=" * 80)
+                print(f"✅ DADOS JÁ EXISTEM: {CSV_AGG_PATH}")
+                print(f"   Tamanho: {file_size:.1f} MB")
+                print("   Pulando download (usar dados existentes)")
+                print("=" * 80)
+                # Gerar timeframes e retornar
+                timeframes = {"15m": 15, "30m": 30, "1h": 60, "4h": 240, "8h": 480, "1d": 1440}
+                csv_paths = {}
+                for label, tf_min in timeframes.items():
+                    csv_tf_path = os.path.join(OUT_DIR, f"{SYMBOL}_{label}.csv")
+                    if not os.path.exists(csv_tf_path):
+                        gerar_timeframe_tratado(CSV_AGG_PATH, csv_tf_path, tf_min, MIN_WHALE_USD)
+                    csv_paths[label] = csv_tf_path
+                return csv_paths
+        except:
+            pass  # Se falhar, redownload
+    
     print("=" * 80)
     print(f"EXTRAINDO DADOS: {SYMBOL}")
     print(f"PERÍODO: {START_DT.strftime('%Y-%m-%d')} até {END_DT.strftime('%Y-%m-%d')}")
@@ -375,14 +411,28 @@ def extrair_dados_binance():
         time.sleep(random.uniform(0.3, 1.0))
     session.close()
     print(f"\n>>> Download: {success_count}/{len(dates)} dias")
+    print("="*70, flush=True)
     if success_count == 0: raise RuntimeError("Nenhum dado!")
+    
+    print("\n📊 GERANDO TIMEFRAMES (pode demorar 10-15min)...")
+    print("="*70, flush=True)
+    
     timeframes = {"15m": 15, "30m": 30, "1h": 60, "4h": 240, "8h": 480, "1d": 1440}
     csv_paths = {}
     for label, tf_min in timeframes.items():
+        print(f"\n🔄 Processando {label}...", flush=True)
         csv_tf_path = os.path.join(OUT_DIR, f"{SYMBOL}_{label}.csv")
-        if os.path.exists(csv_tf_path): os.remove(csv_tf_path)
+        if os.path.exists(csv_tf_path): 
+            os.remove(csv_tf_path)
+            print(f"   Removido CSV antigo: {label}", flush=True)
+        
         gerar_timeframe_tratado(CSV_AGG_PATH, csv_tf_path, tf_min, MIN_WHALE_USD)
         csv_paths[label] = csv_tf_path
+        print(f"✅ {label} concluído!", flush=True)
+    
+    print("\n" + "="*70)
+    print("✅ TODOS OS TIMEFRAMES GERADOS COM SUCESSO!")
+    print("="*70, flush=True)
     return csv_paths
 
 
