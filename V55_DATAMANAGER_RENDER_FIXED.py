@@ -7,8 +7,8 @@
 #
 # ██ CONFIGURAÇÃO - MODIFIQUE AQUI ██
 SYMBOL = "PENDLEUSDT"
-START_DT_STR = "2024-01-01"  # Data início (YYYY-MM-DD)
-END_DT_STR = "2025-01-15"    # Data fim (YYYY-MM-DD)
+START_DT_STR = "2025-12-01"  # Data início (YYYY-MM-DD) - 2 MESES
+END_DT_STR = "2025-12-10"    # Data fim (YYYY-MM-DD) - PROCESSA EM ~20MIN
 MIN_WHALE_USD = 500          # Filtro whale em USD
 
 # ██ CONFIGURAÇÃO DE TREINO (SEM INPUTS INTERATIVOS) ██
@@ -158,30 +158,28 @@ END_DT = datetime.strptime(END_DT_STR, "%Y-%m-%d").replace(hour=23, minute=59, s
 # ============================================================
 # 🔧 PATCH RENDER: Detectar e usar disco persistente
 # ============================================================
-# Render monta discos em /opt/render/project/disk ou via variável
-RENDER_DISK = os.environ.get('RENDER_DISK_PATH', None)
+# CRÍTICO: Render precisa usar /opt/render/project/.data (persistente)!
+RENDER_DISK = '/opt/render/project/.data'  # DISCO PERSISTENTE CORRETO
 
-# Tentar paths comuns do Render se variável não existe
-if not RENDER_DISK:
-    for possible_path in ["/opt/render/project/disk", "/mnt/data", "/data"]:
-        if os.path.exists(possible_path):
-            RENDER_DISK = possible_path
-            break
-
-# Configurar BASE_DIR baseado no ambiente
-if RENDER_DISK:
+# Se estiver no Render (detecta pela variável PORT), FORÇA uso do disco
+if os.environ.get('PORT'):
+    # Estamos no Render - SEMPRE usar disco persistente
     BASE_DIR = RENDER_DISK
     print("="*70, flush=True)
-    print("🚀 RENDER DISK PERSISTENTE DETECTADO!", flush=True)
+    print("🚀 RENDER DETECTADO - USANDO DISCO PERSISTENTE!", flush=True)
     print(f"   Path: {BASE_DIR}", flush=True)
-    print(f"   ✅ Arquivos (CSVs, PKLs) serão PRESERVADOS entre deploys!", flush=True)
+    print("   ✅ Arquivos (CSVs, PKLs, ZIP) serão PRESERVADOS entre deploys!", flush=True)
     print("="*70, flush=True)
+    
+    # Criar diretório se não existir
+    os.makedirs(BASE_DIR, exist_ok=True)
 else:
+    # Ambiente local
     BASE_DIR = "."
     print("="*70, flush=True)
     print("💻 AMBIENTE LOCAL DETECTADO", flush=True)
-    print(f"   Path: {os.path.abspath(BASE_DIR)}", flush=True)
-    print(f"   ⚠️  Arquivos em diretório de trabalho (não persistente)", flush=True)
+    print(f"   Path: {os.getcwd()}", flush=True)
+    print("   ⚠️  Arquivos em diretório de trabalho (não persistente)", flush=True)
     print("="*70, flush=True)
 
 # Paths finais (funcionam em local E Render)
@@ -261,39 +259,68 @@ def process_binance_data(df):
     })
     return df_processed.dropna()
 
-def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=500, chunksize=200_000):
+def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=500, chunksize=500_000):
     print(f">>> Gerando dataset {timeframe_min}m...", flush=True)
     buckets = {}
-    for chunk in pd.read_csv(csv_agg_path, chunksize=chunksize):
-        chunk["ts"] = pd.to_numeric(chunk["ts"], errors="coerce")
-        chunk["price"] = pd.to_numeric(chunk["price"], errors="coerce")
-        chunk["qty"] = pd.to_numeric(chunk["qty"], errors="coerce")
-        chunk["side"] = pd.to_numeric(chunk["side"], errors="coerce")
-        chunk = chunk.dropna(subset=["ts", "price", "qty", "side"])
-        if chunk.empty:
-            continue
-        dt = pd.to_datetime(chunk["ts"].astype("int64"), unit="ms", utc=True)
-        bucket_ms = (dt.dt.floor(f"{timeframe_min}min").astype("int64") // 10**6).astype("int64")
-        chunk = chunk.assign(bucket_ms=bucket_ms)
-        val_usd = chunk["price"] * chunk["qty"]
-        is_whale = val_usd >= float(min_val_usd)
-        for ts_ms, price, qty, side, bms, whale in zip(
-            chunk["ts"].astype("int64"), chunk["price"].astype(float),
-            chunk["qty"].astype(float), chunk["side"].astype(int),
-            chunk["bucket_ms"].astype("int64"), is_whale.astype(bool)
-        ):
-            st = buckets.get(bms)
-            if st is None:
-                st = {"ts": int(bms), "open": float(price), "high": float(price), "low": float(price), "close": float(price), "volume": 0.0, "buy_vol": 0.0, "sell_vol": 0.0}
-                buckets[bms] = st
-            else:
-                if price > st["high"]: st["high"] = float(price)
-                if price < st["low"]: st["low"] = float(price)
-                st["close"] = float(price)
-            st["volume"] += float(qty)
-            if whale:
-                if side == 0: st["buy_vol"] += float(qty)
-                else: st["sell_vol"] += float(qty)
+    chunks_processados = 0
+    
+    try:
+        for chunk in pd.read_csv(csv_agg_path, chunksize=chunksize):
+            chunks_processados += 1
+            if chunks_processados % 10 == 0:
+                print(f"   Processados {chunks_processados} chunks...", flush=True)
+            
+            # OTIMIZAÇÃO: Conversão em batch (mais rápido que linha por linha)
+            chunk = chunk.astype({
+                'ts': 'int64',
+                'price': 'float64',
+                'qty': 'float64',
+                'side': 'int8'
+            }, errors='ignore')
+            
+            chunk = chunk.dropna(subset=["ts", "price", "qty", "side"])
+            if chunk.empty:
+                continue
+            
+            # OTIMIZAÇÃO: Operações vetorizadas (muito mais rápido)
+            dt = pd.to_datetime(chunk["ts"], unit="ms", utc=True)
+            chunk["bucket_ms"] = (dt.dt.floor(f"{timeframe_min}min").astype("int64") // 10**6).astype("int64")
+            chunk["val_usd"] = chunk["price"] * chunk["qty"]
+            chunk["is_whale"] = chunk["val_usd"] >= float(min_val_usd)
+            
+            # OTIMIZAÇÃO: GroupBy ao invés de loop Python (10-100x mais rápido)
+            for bms, group in chunk.groupby("bucket_ms"):
+                st = buckets.get(bms)
+                if st is None:
+                    st = {
+                        "ts": int(bms),
+                        "open": float(group["price"].iloc[0]),
+                        "high": float(group["price"].max()),
+                        "low": float(group["price"].min()),
+                        "close": float(group["price"].iloc[-1]),
+                        "volume": 0.0,
+                        "buy_vol": 0.0,
+                        "sell_vol": 0.0
+                    }
+                    buckets[bms] = st
+                else:
+                    st["high"] = max(st["high"], float(group["price"].max()))
+                    st["low"] = min(st["low"], float(group["price"].min()))
+                    st["close"] = float(group["price"].iloc[-1])
+                
+                st["volume"] += float(group["qty"].sum())
+                
+                # Volume de whales
+                whales = group[group["is_whale"]]
+                if not whales.empty:
+                    st["buy_vol"] += float(whales[whales["side"] == 0]["qty"].sum())
+                    st["sell_vol"] += float(whales[whales["side"] == 1]["qty"].sum())
+        
+        print(f"   Total: {chunks_processados} chunks processados", flush=True)
+        
+    except Exception as e:
+        print(f"❌ Erro processando chunks: {e}", flush=True)
+        raise
     if not buckets:
         raise RuntimeError("Nenhum bucket gerado!")
     rows = [[st["ts"], st["open"], st["high"], st["low"], st["close"], st["volume"], st["buy_vol"], st["sell_vol"], st["buy_vol"] - st["sell_vol"]] for st in [buckets[bms] for bms in sorted(buckets.keys())]]
@@ -351,6 +378,29 @@ def start_http_server():
     HTTPServer(('0.0.0.0', port), DownloadHandler).serve_forever()
 
 def extrair_dados_binance():
+    # RENDER FIX: Verificar se aggTrades já existe e está completo
+    if os.path.exists(CSV_AGG_PATH):
+        try:
+            df_check = pd.read_csv(CSV_AGG_PATH, nrows=1)
+            file_size = os.path.getsize(CSV_AGG_PATH) / (1024 * 1024)  # MB
+            if file_size > 10:  # Se arquivo tem >10MB, assume que está completo
+                print("=" * 80)
+                print(f"✅ DADOS JÁ EXISTEM: {CSV_AGG_PATH}")
+                print(f"   Tamanho: {file_size:.1f} MB")
+                print("   Pulando download (usar dados existentes)")
+                print("=" * 80)
+                # Gerar timeframes e retornar
+                timeframes = {"15m": 15, "30m": 30, "1h": 60, "4h": 240, "8h": 480, "1d": 1440}
+                csv_paths = {}
+                for label, tf_min in timeframes.items():
+                    csv_tf_path = os.path.join(OUT_DIR, f"{SYMBOL}_{label}.csv")
+                    if not os.path.exists(csv_tf_path):
+                        gerar_timeframe_tratado(CSV_AGG_PATH, csv_tf_path, tf_min, MIN_WHALE_USD)
+                    csv_paths[label] = csv_tf_path
+                return csv_paths
+        except:
+            pass  # Se falhar, redownload
+    
     print("=" * 80)
     print(f"EXTRAINDO DADOS: {SYMBOL}")
     print(f"PERÍODO: {START_DT.strftime('%Y-%m-%d')} até {END_DT.strftime('%Y-%m-%d')}")
@@ -375,246 +425,45 @@ def extrair_dados_binance():
         time.sleep(random.uniform(0.3, 1.0))
     session.close()
     print(f"\n>>> Download: {success_count}/{len(dates)} dias")
+    print("="*70, flush=True)
     if success_count == 0: raise RuntimeError("Nenhum dado!")
+    
+    print("\n📊 GERANDO TIMEFRAMES...")
+    print("="*70, flush=True)
+    
     timeframes = {"15m": 15, "30m": 30, "1h": 60, "4h": 240, "8h": 480, "1d": 1440}
     csv_paths = {}
     for label, tf_min in timeframes.items():
         csv_tf_path = os.path.join(OUT_DIR, f"{SYMBOL}_{label}.csv")
-        if os.path.exists(csv_tf_path): os.remove(csv_tf_path)
+        
+        # 🚀 OTIMIZAÇÃO: Não regenerar se já existe e é válido
+        if os.path.exists(csv_tf_path):
+            try:
+                df_check = pd.read_csv(csv_tf_path, nrows=1)
+                file_size = os.path.getsize(csv_tf_path) / 1024  # KB
+                if file_size > 10:  # Arquivo válido (>10KB)
+                    print(f"✅ {label} JÁ EXISTE ({file_size/1024:.1f} MB) - Pulando", flush=True)
+                    csv_paths[label] = csv_tf_path
+                    continue
+            except:
+                pass  # Se erro, regenera
+        
+        print(f"\n🔄 Processando {label}...", flush=True)
         gerar_timeframe_tratado(CSV_AGG_PATH, csv_tf_path, tf_min, MIN_WHALE_USD)
         csv_paths[label] = csv_tf_path
+        print(f"✅ {label} concluído!", flush=True)
+    
+    print("\n" + "="*70)
+    print("✅ TODOS OS TIMEFRAMES GERADOS COM SUCESSO!")
+    print("="*70, flush=True)
     return csv_paths
 
-# ============================================================================
-# 📊 TRADE ANALYZER V7 - ANÁLISE DE HORÁRIOS, DIAS E PADRÕES
-# ============================================================================
-class TradeAnalyzer:
-    """
-    Analisa trades por horário, dia da semana e padrões de sequência.
-    """
-    def __init__(self, pattern_length=7, min_occurrences=20):
-        self.pattern_length = pattern_length
-        self.min_occurrences = min_occurrences
-        
-        # Análise temporal
-        self.hourly_stats = {}  # {hora: {trades, wins, pnl}}
-        self.daily_stats = {}   # {dia: {trades, wins, pnl}}
-        
-        # Análise de padrões
-        self.pattern_history = []  # Lista de direções (BUY=1, SELL=-1)
-        self.patterns = {}  # {padrão: {wins, losses, pnl}}
-        
-    def add_trade(self, signal_direction, win, pnl, timestamp):
-        """
-        Adiciona um trade para análise.
-        
-        Args:
-            signal_direction: 1 (BUY) ou -1 (SELL)
-            win: True se ganhou, False se perdeu
-            pnl: Lucro/prejuízo em USD
-            timestamp: Timestamp do trade
-        """
-        # Adiciona direção ao histórico
-        self.pattern_history.append(signal_direction)
-        
-        # Análise temporal (se timestamp válido)
-        if timestamp is not None and not pd.isna(timestamp):
-            try:
-                # --- CORREÇÃO: Conversão robusta de tempo ---
-                if not isinstance(timestamp, (pd.Timestamp, datetime)):
-                    if isinstance(timestamp, (int, float, np.integer)):
-                        # Se for > 1e11 é milissegundos (padrão Binance/Bybit)
-                        unit = 'ms' if timestamp > 1e11 else 's'
-                        timestamp = pd.to_datetime(timestamp, unit=unit)
-                    else:
-                        timestamp = pd.to_datetime(str(timestamp))
-                
-                # Agora hour e day_name funcionam em qualquer formato
-                hour = timestamp.hour
-                day = timestamp.day_name()
-                
-                # Estatísticas por Hora
-                if hour not in self.hourly_stats:
-                    self.hourly_stats[hour] = {'trades': 0, 'wins': 0, 'pnl': 0.0}
-                self.hourly_stats[hour]['trades'] += 1
-                if win:
-                    self.hourly_stats[hour]['wins'] += 1
-                self.hourly_stats[hour]['pnl'] += pnl
-                
-                # Estatísticas por Dia
-                if day not in self.daily_stats:
-                    self.daily_stats[day] = {'trades': 0, 'wins': 0, 'pnl': 0.0}
-                self.daily_stats[day]['trades'] += 1
-                if win:
-                    self.daily_stats[day]['wins'] += 1
-                self.daily_stats[day]['pnl'] += pnl
-                
-            except Exception:
-                pass  # Timestamp inválido, pula análise temporal
-        
-        # Análise de padrões (se temos histórico suficiente)
-        if len(self.pattern_history) >= self.pattern_length:
-            # Pega últimos N sinais
-            pattern = tuple(self.pattern_history[-self.pattern_length:])
-            
-            # Converte para string legível (B=BUY, S=SELL)
-            pattern_str = ','.join(['B' if d == 1 else 'S' for d in pattern])
-            
-            if pattern_str not in self.patterns:
-                self.patterns[pattern_str] = {'wins': 0, 'losses': 0, 'pnl': 0.0, 'count': 0}
-            
-            self.patterns[pattern_str]['count'] += 1
-            if win:
-                self.patterns[pattern_str]['wins'] += 1
-            else:
-                self.patterns[pattern_str]['losses'] += 1
-            self.patterns[pattern_str]['pnl'] += pnl
-    
-    def get_report(self):
-        """Retorna relatório completo de análise."""
-        return {
-            'hourly': self.hourly_stats,
-            'daily': self.daily_stats,
-            'patterns': self.patterns,
-            'total_trades': len(self.pattern_history)
-        }
-    
-    def print_final_report(self, target_name="Target"):
-        """Imprime relatório formatado de análise."""
-        print("\n" + "█" * 100)
-        print(f"█ RELATÓRIO COMPLETO DE ANÁLISE - {target_name}")
-        print("█" * 100)
-        print(f"\n📊 Total de trades analisados: {len(self.pattern_history)}")
-        
-        # ===== ANÁLISE POR HORÁRIO =====
-        print("\n" + "=" * 80)
-        print("📊 ANÁLISE DE PERFORMANCE POR HORÁRIO")
-        print("=" * 80)
-        print()
-        print(f"{'Hora':<7}│ {'Trades':<8}│ {'WR':<8}│ {'PF':<7}│ {'Lucro':<11}│ Status")
-        print("─" * 70)
-        
-        if self.hourly_stats:
-            for hour in sorted(self.hourly_stats.keys()):
-                stats = self.hourly_stats[hour]
-                wr = (stats['wins'] / stats['trades'] * 100) if stats['trades'] > 0 else 0
-                pf = (stats['pnl'] / abs(min(stats['pnl'], -1))) if stats['pnl'] < 0 else stats['pnl']
-                
-                status = "✅" if wr >= 60 else "⚠️" if wr >= 50 else "❌"
-                print(f"{hour:02d}h    │ {stats['trades']:<8}│ {wr:>5.1f}%  │ {pf:>6.2f} │ ${stats['pnl']:>10.2f} │ {status}")
-        
-        # ===== ANÁLISE POR DIA =====
-        print("\n" + "=" * 80)
-        print("📅 ANÁLISE DE PERFORMANCE POR DIA DA SEMANA")
-        print("=" * 80)
-        print()
-        print(f"{'Dia':<9}│ {'Trades':<8}│ {'WR':<8}│ {'PF':<7}│ {'Lucro':<11}│ Status")
-        print("─" * 70)
-        
-        if self.daily_stats:
-            days_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            for day in days_order:
-                if day in self.daily_stats:
-                    stats = self.daily_stats[day]
-                    wr = (stats['wins'] / stats['trades'] * 100) if stats['trades'] > 0 else 0
-                    pf = (stats['pnl'] / abs(min(stats['pnl'], -1))) if stats['pnl'] < 0 else stats['pnl']
-                    
-                    status = "✅" if wr >= 60 else "⚠️" if wr >= 50 else "❌"
-                    print(f"{day:<9}│ {stats['trades']:<8}│ {wr:>5.1f}%  │ {pf:>6.2f} │ ${stats['pnl']:>10.2f} │ {status}")
-        
-        # ===== RECOMENDAÇÕES =====
-        print("\n" + "=" * 80)
-        print("💡 RECOMENDAÇÕES")
-        print("=" * 80)
-        
-        # Horários ruins
-        if self.hourly_stats:
-            bad_hours = [h for h, s in self.hourly_stats.items() 
-                        if s['trades'] >= 10 and (s['wins'] / s['trades'] < 0.5)]
-            if bad_hours:
-                print(f"⚠️ Evitar horários: {', '.join([f'{h:02d}h' for h in sorted(bad_hours)])}")
-        
-        # Dias ruins
-        if self.daily_stats:
-            bad_days = [d for d, s in self.daily_stats.items() 
-                       if s['trades'] >= 10 and (s['wins'] / s['trades'] < 0.5)]
-            if bad_days:
-                print(f"⚠️ Evitar dias: {', '.join(bad_days)}")
-        
-        print("=" * 80)
-        
-        # ===== ANÁLISE DE PADRÕES =====
-        if self.patterns:
-            print("\n" + "=" * 100)
-            print("🔍 ANÁLISE DE PADRÕES DE SEQUÊNCIA")
-            print("=" * 100)
-            
-            # Separa padrões por sinal final
-            buy_patterns = {p: s for p, s in self.patterns.items() if p.endswith(',B')}
-            sell_patterns = {p: s for p, s in self.patterns.items() if p.endswith(',S')}
-            
-            # Top 10 BUY patterns
-            if buy_patterns:
-                print("\n" + "=" * 100)
-                print("📈 TOP 10 PADRÕES DE SEQUÊNCIA - SINAL FINAL: BUY (últimos 7 sinais)")
-                print("=" * 100)
-                print()
-                print(f"{'Rank':<7}│ {'Padrão':<26}│ {'WR':<9}│ {'PF':<8}│ {'Ocorr':<8}│ Lucro")
-                print("─" * 100)
-                
-                sorted_buy = sorted(buy_patterns.items(), 
-                                   key=lambda x: (x[1]['wins'] / max(1, x[1]['count'])) if x[1]['count'] >= self.min_occurrences else 0, 
-                                   reverse=True)[:10]
-                
-                for rank, (pattern, stats) in enumerate(sorted_buy, 1):
-                    if stats['count'] >= self.min_occurrences:
-                        wr = (stats['wins'] / stats['count'] * 100) if stats['count'] > 0 else 0
-                        pf = abs(stats['pnl'] / min(stats['pnl'], -1)) if stats['pnl'] < 0 else stats['pnl']
-                        print(f"{rank:<7}│ {pattern:<26}│ {wr:>6.1f}% │ {pf:>6.2f} │ {stats['count']:<8}│ $ {stats['pnl']:>10.0f}")
-            
-            # Top 10 SELL patterns
-            if sell_patterns:
-                print("\n" + "=" * 100)
-                print("📉 TOP 10 PADRÕES DE SEQUÊNCIA - SINAL FINAL: SELL (últimos 7 sinais)")
-                print("=" * 100)
-                print()
-                print(f"{'Rank':<7}│ {'Padrão':<26}│ {'WR':<9}│ {'PF':<8}│ {'Ocorr':<8}│ Lucro")
-                print("─" * 100)
-                
-                sorted_sell = sorted(sell_patterns.items(), 
-                                    key=lambda x: (x[1]['wins'] / max(1, x[1]['count'])) if x[1]['count'] >= self.min_occurrences else 0, 
-                                    reverse=True)[:10]
-                
-                for rank, (pattern, stats) in enumerate(sorted_sell, 1):
-                    if stats['count'] >= self.min_occurrences:
-                        wr = (stats['wins'] / stats['count'] * 100) if stats['count'] > 0 else 0
-                        pf = abs(stats['pnl'] / min(stats['pnl'], -1)) if stats['pnl'] < 0 else stats['pnl']
-                        print(f"{rank:<7}│ {pattern:<26}│ {wr:>6.1f}% │ {pf:>6.2f} │ {stats['count']:<8}│ $ {stats['pnl']:>10.0f}")
-            
-            # Piores padrões
-            print("\n" + "=" * 100)
-            print("⚠️ TOP 10 PIORES PADRÕES (EVITAR!)")
-            print("=" * 100)
-            print()
-            print(f"{'Rank':<7}│ {'Padrão':<26}│ {'WR':<9}│ {'PF':<8}│ {'Ocorr':<8}│ Prejuízo")
-            print("─" * 100)
-            
-            worst_patterns = sorted(self.patterns.items(), 
-                                   key=lambda x: x[1]['pnl'] if x[1]['count'] >= self.min_occurrences else float('inf'))[:10]
-            
-            for rank, (pattern, stats) in enumerate(worst_patterns, 1):
-                if stats['count'] >= self.min_occurrences:
-                    wr = (stats['wins'] / stats['count'] * 100) if stats['count'] > 0 else 0
-                    pf = abs(stats['pnl'] / min(stats['pnl'], -1)) if stats['pnl'] < 0 else stats['pnl']
-                    print(f"{rank:<7}│ {pattern:<26}│ {wr:>6.1f}% │ {pf:>6.2f} │ {stats['count']:<8}│ $ {stats['pnl']:>10.0f}")
-            
-            print("=" * 100)
-        
-        print("\n" + "█" * 100)
-        print()
 
-ANALYZER_AVAILABLE = True  # Sempre disponível agora!
-print("✅ Trade Analyzer V7 carregado com sucesso!")
+# ======================================================================
+# BLOCO REMOVIDO: Backtest/Simulação/Análise
+# (Linhas originais: 388-619)
+# V27 já faz backtest - Render só treina modelos
+# ======================================================================
 
 # 🚀 VARIÁVEL GLOBAL PARA O JUIZ (RESOLVE ERRO DE ESCOPO)
 meta_modelos_features = {}
@@ -1081,6 +930,63 @@ print(f">>> Servidor HTTP iniciado na porta {os.environ.get('PORT', 10000)}")
 
 # Extrai dados da Binance
 csv_paths = extrair_dados_binance()
+
+print("\n" + "="*80)
+print("🎉 CSVs GERADOS COM SUCESSO!")
+print("="*80)
+for label, path in csv_paths.items():
+    size_mb = os.path.getsize(path) / (1024*1024)
+    print(f"   ✅ {label:4s}: {size_mb:6.1f} MB")
+print("="*80)
+
+# 🚀 GERAR ZIP E LINK CATBOX IMEDIATAMENTE (ANTES DO TREINO)
+print("\n📦 CRIANDO ZIP COM CSVs (para download rápido)...")
+ZIP_CSVS_PATH = os.path.join(BASE_DIR, f"{SYMBOL}_CSVs_ONLY.zip")
+
+try:
+    import zipfile
+    with zipfile.ZipFile(ZIP_CSVS_PATH, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for label, csv_path in csv_paths.items():
+            if os.path.exists(csv_path):
+                arcname = os.path.basename(csv_path)
+                zf.write(csv_path, arcname)
+                print(f"   📊 Adicionado: {arcname}")
+    
+    zip_size = os.path.getsize(ZIP_CSVS_PATH) / (1024 * 1024)
+    print(f"\n✅ ZIP CSVs criado: {zip_size:.2f} MB")
+    print(f"   Path: {ZIP_CSVS_PATH}")
+    
+    # UPLOAD PARA CATBOX
+    print("\n🚀 FAZENDO UPLOAD PARA CATBOX (CSVs)...")
+    link_csvs = upload_catbox(ZIP_CSVS_PATH)
+    
+    if link_csvs:
+        print("\n" + "="*80)
+        print("🎉 LINK #1 PRONTO - CSVs APENAS (SEM PKLs)")
+        print("="*80)
+        print("📦 CONTEÚDO:")
+        print("   ✅ PENDLEUSDT_15m.csv")
+        print("   ✅ PENDLEUSDT_30m.csv")
+        print("   ✅ PENDLEUSDT_1h.csv")
+        print("   ✅ PENDLEUSDT_4h.csv")
+        print("   ✅ PENDLEUSDT_8h.csv")
+        print("   ✅ PENDLEUSDT_1d.csv")
+        print("   ❌ Modelos PKLs (ainda treinando...)")
+        print("="*80)
+        print(f"🔗 LINK CSVs (download rápido):")
+        print(f"   {link_csvs}")
+        print("="*80)
+        print("⏱️  TREINO EM ANDAMENTO...")
+        print("   → Link #2 (CSVs + PKLs) virá em ~1 hora")
+        print("   → Você pode baixar os CSVs agora!")
+        print("="*80)
+    else:
+        print("⚠️  Upload Catbox falhou, mas ZIP está disponível localmente")
+        
+except Exception as e:
+    print(f"❌ Erro criando ZIP de CSVs: {e}")
+    import traceback
+    traceback.print_exc()
 
 # Define variáveis para treino
 csv_path = csv_paths["15m"]
@@ -4299,1214 +4205,12 @@ def filtro_agressao_v2_causal(df_sim, i, direcao, modo="balanced"):
     
     return {"aprovado": aprovado, "score": score_norm, "motivo": motivo}
 
-def modulo_8_simulador_elite_v2(
-    df_backtest,
-    lista_targets,
-    modelos_cache,
-    probs_cache,
-    meta_modelos_cache,
-    capital_inicial,
-    valor_mao,
-    alavancagem,
-    min_conf,
-    usar_meta,
-    corte_juiz,
-    usar_fluxo=False,
-    modo_fluxo="balanced",  # 🔥 NOVO: strict | balanced | permissive
-    analyzers=None,  # 📊 V7: Trade Analyzer
-    titulo_relatorio="RELATÓRIO DE PERFORMANCE INSTITUCIONAL",
-):
-    resultados_por_target = {}
 
-    # Controle de juiz (meta-labeling)
-    juiz_ativo = False
-    juiz_key = None
-    if isinstance(usar_meta, (int, float)) and usar_meta > 0:
-        juiz_ativo = True
-        juiz_key = "juiz"
-
-    # Se o meta_modelos_cache vier como dict por target, detecta
-    meta_modelos_por_target = None
-    meta_modelos_features = None
-    if isinstance(meta_modelos_cache, dict):
-        # heurística: se tiver chaves iguais a targets ou tiver features por target
-        meta_modelos_por_target = meta_modelos_cache.get("modelos_por_target", None)
-        meta_modelos_features = meta_modelos_cache.get("features_por_target", None)
-
-    # Parâmetros de custo (mantidos conforme padrão do script)
-    comissao, slippage = 0.001, 0.0005
-    custo_total_operacao = comissao + slippage
-    taxa_financiamento = 0.0  # se você usa funding em outro bloco, mantenha lá
-    
-    # 🔧 CORREÇÃO: Taxa de funding realista para futuros perpétuos
-    # Funding típico: 0.01% a cada 8 horas (Binance, Bybit padrão)
-    taxa_financiamento_8h = 0.0001  # 0.01% por 8h (≈10.95% anual se sempre posicionado)
-    
-    # 🔧 CORREÇÃO: Slippage adicional em stops (execução de stop é pior que ordem normal)
-    slippage_stops = slippage * 2.5  # Stops executam com 2.5x mais slippage
-
-    # =========================================================
-    # MEMÓRIA DE DIREÇÃO FINAL POR TARGET (base do K3/K6)
-    # =========================================================
-    
-    n_total = min(
-        len(df_backtest),
-        min(len(probs_cache[t]) for t in lista_targets if t in probs_cache)
-    )
- 
-    direcao_por_target = {tgt: [0] * n_total for tgt in lista_targets}
-    
-    # 🔥 ORDENAÇÃO: K3/K6 precisam que seus componentes sejam processados antes
-    # K3 depende de K1 e K2
-    # K6 depende de K4 e K5
-    targets_ordenados = []
-    targets_compostos = []
-    
-    for tgt in lista_targets:
-        if tgt in ['target_K3', 'target_K6']:
-            targets_compostos.append(tgt)
-        else:
-            targets_ordenados.append(tgt)
-    
-    # Processa targets simples primeiro, depois compostos
-    targets_ordenados.extend(targets_compostos)
-    
-    # 📊 V19 CORREÇÃO CRÍTICA: Criar analyzers ANTES do loop
-    # Sem isso, add_trade() nunca é chamado (horários/dias ficam vazios)
-    if analyzers and 'config' in analyzers:
-        for tgt in targets_ordenados:
-            if tgt not in analyzers:
-                analyzers[tgt] = TradeAnalyzer(
-                    pattern_length=analyzers['config']['pattern_length'],
-                    min_occurrences=analyzers['config']['min_occurrences']
-                )
-    
-    for tgt in targets_ordenados:
-        if tgt not in modelos_cache or tgt not in probs_cache:
-            continue
-        
-        capital = capital_inicial
-        stats = {
-            "sinais_total": 0,
-            "trades_total": 0,
-            "trades_buy": 0,
-            "trades_sell": 0,
-            "wins_buy": 0,
-            "loss_buy": 0,
-            "wins_sell": 0,
-            "loss_sell": 0,
-            "saida_tp": 0,
-            "saida_sl": 0,
-            "saida_fluxo": 0,
-            "saida_tempo": 0,
-            "hold_time_total": 0,
-            "fluxo_win": 0,
-            "vetados_juiz": 0,
-            "vetados_posicao": 0,  # <<< ADICIONADO (sem mudar dados, só contagem)
-            "vetados_antisequencia": 0,  # V9: Vetados por 3+ mesma direção
-            "aceitos_antisequencia_alta_conf": 0,  # V9: 3+ mesma direção mas conf 90%+
-            "ultimas_direcoes": [],  # V9: Track últimas direções executadas
-            "lucro_bruto": 0.0,
-            "prejuizo_bruto": 0.0,
-            # 🔬 DIAGNÓSTICOS
-            "timeouts_amplitude": [],
-            "winrate_por_holdtime": {
-                "1-3": {"wins": 0, "total": 0},
-                "4-7": {"wins": 0, "total": 0},
-                "8-15": {"wins": 0, "total": 0},
-                "16+": {"wins": 0, "total": 0}
-            },
-            "tp_sl_valores": {
-                "tp_medio": [],
-                "sl_medio": [],
-                "tp_atingiu": 0,
-                "sl_atingiu": 0
-            }
-        }
-
-        pico_capital = capital_inicial
-        drawdown_max = 0.0
-
-        # Estado de posição
-        posicionado = False
-        index_saida = 0
-
-        n = min(len(df_backtest), len(probs_cache[tgt]))
-        df_sim = df_backtest.iloc[:n].copy()
-        probs = probs_cache[tgt][:n]
-        classes = list(modelos_cache[tgt].classes_)
-
-        if "atr14" not in df_sim.columns:
-            df_sim["atr14"] = (df_sim["high"] - df_sim["low"]).rolling(14).mean().ffill()
-
-        for i in range(n - 10):
-            # ---------------------------------------------------------
-            # 1) Sinal do modelo
-            # ---------------------------------------------------------
-            p_up = probs[i][classes.index(1)] if 1 in classes else 0
-            p_down = (
-                probs[i][classes.index(-1)]
-                if -1 in classes
-                else (probs[i][classes.index(0)] if 0 in classes and len(classes) == 2 else 0)
-            )
-
-            direcao = 0
-            
-            # ---------------------------------------------------------------
-            # LÓGICA ESPECIAL PARA TARGETS ESPECIALISTAS (REV_LONG / REV_SHORT)
-            # ---------------------------------------------------------------
-            # REV_LONG: classe 1 = vai subir → COMPRA
-            # REV_SHORT: classe 1 = vai cair → VENDA (invertido!)
-            # ---------------------------------------------------------------
-            if tgt == "target_REV_LONG":
-                # Especialista COMPRA: só compra, nunca vende
-                if p_up >= min_conf:
-                    direcao = 1
-            elif tgt == "target_REV_SHORT":
-                # Especialista VENDA: classe 1 = vai cair → direcao = -1
-                if p_up >= min_conf:
-                    direcao = -1
-            else:
-                # Lógica padrão para outros targets
-                if p_up >= min_conf:
-                    direcao = 1
-                elif p_down >= min_conf:
-                    direcao = -1
-
-            if direcao != 0:
-                stats["sinais_total"] += 1
-            
-            # V10 FIX CRÍTICO: K6 e K3 NÃO devem salvar direção do modelo!
-            # K3 opera por concordância K1+K2, K6 por K4+K5
-            if tgt not in ["target_K3", "target_K6", "target_CONFLUENCIA"]:
-                # Memoriza direção SEMPRE (antes de K3/K6/CONFLUENCIA modificarem)
-                # CRÍTICO: Deve salvar ANTES da lógica de confluência!
-                direcao_por_target[tgt][i] = direcao
-            
-            # =========================================================
-            # CONFLUÊNCIA INTELIGENTE REV_LONG + REV_SHORT
-            # =========================================================
-            if tgt == "target_CONFLUENCIA":
-                # Busca direções dos especialistas
-                dir_long = direcao_por_target.get("target_REV_LONG", [0]*n)[i]
-                dir_short = direcao_por_target.get("target_REV_SHORT", [0]*n)[i]
-                
-                # Resetamos direção para usar lógica de confluência
-                direcao = 0
-                
-                # CASO 1: Apenas LONG quer comprar, SHORT neutro → COMPRA
-                if dir_long == 1 and dir_short == 0:
-                    direcao = 1
-                
-                # CASO 2: Apenas SHORT quer vender, LONG neutro → VENDA
-                elif dir_short == -1 and dir_long == 0:
-                    direcao = -1
-                
-                # CASO 3: DIVERGÊNCIA! LONG quer comprar E SHORT quer vender
-                # Árbitro (target_CONFLUENCIA) decide baseado no seu próprio modelo
-                elif dir_long == 1 and dir_short == -1:
-                    # Usa a probabilidade do modelo CONFLUENCIA para decidir
-                    if p_up >= min_conf:
-                        direcao = 1   # Árbitro decide COMPRA
-                    elif p_down >= min_conf:
-                        direcao = -1  # Árbitro decide VENDA
-                    # Se árbitro não tem confiança, não opera (direcao = 0)
-                
-                # CASO 4: Ambos neutros → Não opera
-                # (direcao já é 0)
-                
-                # CASO 5: Consenso (ambos querem mesma direção) - raro mas possível
-                elif dir_long == 1 and dir_short == 0:
-                    direcao = 1
-                elif dir_long == 0 and dir_short == -1:
-                    direcao = -1
-                
-                if direcao == 0:
-                    continue  # Sem sinal claro, pula
-            
-            # =========================================================
-	    # K3 = CONFLUÊNCIA INTEGRAL K1 + K2 (COMPRAS E VENDAS)
-	    # =========================================================
-            if tgt == "target_K3":
-                dir_k1 = direcao_por_target.get("target_K1", [0]*n)[i]
-                dir_k2 = direcao_por_target.get("target_K2", [0]*n)[i]
-	        
-                # Resetamos a direção do modelo base do K3 para usar a herança pura
-                direcao = 0
-	        
-                if dir_k1 == 1 and dir_k2 == 1:
-                    direcao = 1  # Compra confirmada por ambos
-                elif dir_k1 == -1 and dir_k2 == -1:
-                    direcao = -1 # Venda confirmada por ambos [CORREÇÃO: Adicionado herança de venda]
-	            
-                if direcao == 0:
-                    continue # Ignora se não houver confluência total
-            
-            # =========================================================
-	    # K6 = CONFLUÊNCIA INTEGRAL K4 + K5
-	    # =========================================================
-            if tgt == "target_K6":
-                dir_k4 = direcao_por_target.get("target_K4", [0]*n)[i]
-                dir_k5 = direcao_por_target.get("target_K5", [0]*n)[i]
-	        
-                direcao = 0
-	        
-                # Lógica de herança pura K4 + K5
-                if dir_k4 == 1 and dir_k5 == 1:
-                   direcao = 1
-                elif dir_k4 == -1 and dir_k5 == -1:
-                   direcao = -1
-	            
-                if direcao == 0:
-                   continue
-            
-   
-   
-
-            # ---------------------------------------------------------
-            # 2) Trava de posição
-            # ---------------------------------------------------------
-            if posicionado and i < index_saida:
-                stats["vetados_posicao"] += 1
-                continue
-            elif posicionado and i >= index_saida:
-                posicionado = False
-                index_saida = 0
-
-            
-            
-            # Contabiliza sinal (independente de posição)
-            if direcao != 0:
-                stats["sinais_total"] += 1
-
-                # -----------------------------------------------------
-                # 2) 🛡️ Trava de Ocupação: não executa novo trade com posição aberta
-                # -----------------------------------------------------
-                if posicionado and i < index_saida:
-                    stats["vetados_posicao"] += 1
-                    continue
-                elif posicionado and i >= index_saida:
-                    posicionado = False
-                    index_saida = 0
-
-                # 🛡️ FILTRO META-LABELING (O JUIZ)
-                if juiz_ativo:
-                    try:
-                        conf_val = max(p_up, p_down)
-
-                        # suporte a features por target
-                        cols_juiz = None
-                        if meta_modelos_features and isinstance(meta_modelos_features, dict) and tgt in meta_modelos_features:
-                            cols_juiz = meta_modelos_features[tgt]
-
-                        df_row = df_sim.iloc[[i]].copy()
-                        df_row["meta_conf_primaria"] = conf_val
-
-                        if cols_juiz:
-                            for c in cols_juiz:
-                                if c not in df_row.columns:
-                                    df_row[c] = 0.0
-                            X_meta = df_row[cols_juiz].values
-                        else:
-                            X_meta = df_row.select_dtypes(include=[np.number]).values
-
-                        # pega o juiz do target, se existir
-                        juiz_model = None
-                        if isinstance(meta_modelos_cache, dict) and tgt in meta_modelos_cache:
-                            juiz_model = meta_modelos_cache[tgt]
-                        elif meta_modelos_por_target and isinstance(meta_modelos_por_target, dict) and tgt in meta_modelos_por_target:
-                            juiz_model = meta_modelos_por_target[tgt]
-                        elif isinstance(meta_modelos_cache, dict) and "juiz_global" in meta_modelos_cache:
-                            juiz_model = meta_modelos_cache["juiz_global"]
-
-                        if juiz_model is not None:
-                            p_ok = float(juiz_model.predict_proba(X_meta)[0][1])
-                            # Debug opcional — se quiser silenciar, comente
-                            print(f"    [DEBUG JUIZ] {tgt} | Prob. Acerto: {p_ok:.4f} | Corte: {corte_juiz:.2f}")
-                            if p_ok < corte_juiz:
-                                stats["vetados_juiz"] += 1
-                                continue
-                    except Exception:
-                        # Em caso de erro do juiz, não trava o backtest
-                        pass
-                # =====================================================
-                # FILTRO DE AGRESSÃO REMOVIDO - ML PURO!
-                # =====================================================
-                # V8: Confiamos 100% no modelo ML
-                # Sem EMA, RSI, MACD ou qualquer indicador velho
-                # O modelo já aprendeu tudo que precisa!
-                
-                # (Código do filtro removido - 141 linhas de lixo eliminadas)
-
-                # -----------------------------------------------------
-                # 3) Execução do trade (1 por vez) — preserva cálculo original
-                # -----------------------------------------------------
-                # 🔧 CORREÇÃO CRÍTICA: Entrada no OPEN do próximo candle
-                # Motivo: O sinal é gerado APÓS o close do candle atual.
-                #         Em mercado real, só podemos executar no próximo candle.
-                #         Usar o close do candle atual = LOOK-AHEAD BIAS grave!
-                
-                # ORIGINAL (com look-ahead bias):
-                # preco_entrada = float(df_sim["close"].iloc[i])
-                
-                # CORRIGIDO (realista):
-                if i + 1 >= len(df_sim):
-                    continue  # Não há próximo candle, pula este sinal
-                index_saida = i + 1
-                posicionado = False                    
-                    
-                    
-                preco_entrada = float(df_sim["open"].iloc[i + 1])  # Open do próximo candle
-                atr = float(df_sim["atr14"].iloc[i]) if not pd.isna(df_sim["atr14"].iloc[i]) else 0.0
-
-                # SL/TP conservadores por ATR (mantém sua lógica se já existia)
-                sl = preco_entrada - (atr * 2.2) if direcao == 1 else preco_entrada + (atr * 2.2)
-                tp = preco_entrada + (atr * 2.2) if direcao == 1 else preco_entrada - (atr * 2.2)
-                
-                # 🔬 DIAGNÓSTICO: Registrar TP/SL médios
-                tp_distance_pct = abs(tp - preco_entrada) / preco_entrada * 100
-                sl_distance_pct = abs(sl - preco_entrada) / preco_entrada * 100
-                stats["tp_sl_valores"]["tp_medio"].append(tp_distance_pct)
-                stats["tp_sl_valores"]["sl_medio"].append(sl_distance_pct)
-                
-                i_entrada = i + 1  # 🔬 Para calcular amplitude depois
-
-                pnl_trade = 0.0
-                motivo_saida = "TEMPO"
-
-                # ==============================
-                # ADICIONADO: contador de fluxo
-                # ==============================
-                agg_counter = 0
-
-                # Simula saída até 01 candles à frente (como já estava)
-                for j in range(i + 1, min(i + 20, n - 1) + 1):
-                    high_j = float(df_sim["high"].iloc[j])
-                    low_j = float(df_sim["low"].iloc[j])
-                    close_j = float(df_sim["close"].iloc[j])
-
-
-                    # SL
-                    if (direcao == 1 and low_j <= sl) or (direcao == -1 and high_j >= sl):
-                        # 🔧 CORREÇÃO: Aplicar slippage adicional em stops
-                        # Stops executam pior que ordens normais (market orders em pânico)
-                        if direcao == 1:
-                            preco_sl_executado = sl * (1 - slippage_stops)  # Vende abaixo do SL
-                        else:
-                            preco_sl_executado = sl * (1 + slippage_stops)  # Compra acima do SL
-                            
-                        pnl_trade = ((preco_sl_executado / preco_entrada) - 1) * direcao
-                        motivo_saida = "SL"
-                        index_saida = j
-                        break
-
-                    # TP
-                    if (direcao == 1 and high_j >= tp) or (direcao == -1 and low_j <= tp):
-                        pnl_trade = ((tp / preco_entrada) - 1) * direcao
-                        motivo_saida = "TP"
-                        index_saida = j
-                        break
-
-                    # TEMPO (último candle do horizonte)
-                    if j == min(i + 7, n - 1):
-                        pnl_trade = ((close_j / preco_entrada) - 1) * direcao
-                        motivo_saida = "TEMPO"
-                        index_saida = j
-                        break
-                        
-		# ------------------------------
-		# CUSTOS REAIS SOBRE NOTIONAL
-		# ------------------------------
-                notional = valor_mao * alavancagem
-		
-		# 🔧 CORREÇÃO: custo round-trip (entrada + saída)
-		# Fórmula correta: notional * 2 * (comissao + slippage)
-		# Entrada: 1x (comissao + slippage)
-		# Saída:   1x (comissao + slippage)
-                custo_operacao_usd = notional * 2 * (comissao + slippage)
-		
-		# 🔧 CORREÇÃO: funding proporcional ao tempo em posição
-		# Em futuros perpétuos, funding é cobrado a cada 8h
-		# 8h = 32 candles de 15min, então (hold_time / 32) = proporção de 8h
-                hold_time = max(1, index_saida - i)
-                funding_usd = notional * taxa_financiamento_8h * (hold_time / 32)
-		
-		# pnl bruto já alavancado
-                pnl_bruto_usd = notional * pnl_trade
-		
-		# pnl final
-                lucro_usd = pnl_bruto_usd - custo_operacao_usd - funding_usd
-
-
-                # Contabiliza trade (APENAS aqui: executou de fato)
-                stats["trades_total"] += 1
-                
-                # V9: Registra direção para regra anti-sequência
-                stats["ultimas_direcoes"].append(direcao)
-                if len(stats["ultimas_direcoes"]) > 10:  # Mantém apenas últimas 10
-                    stats["ultimas_direcoes"].pop(0)
-                
-                if direcao == 1:
-                    stats["trades_buy"] += 1
-                    if lucro_usd > 0:
-                        stats["wins_buy"] += 1
-                    else:
-                        stats["loss_buy"] += 1
-                else:
-                    stats["trades_sell"] += 1
-                    if lucro_usd > 0:
-                        stats["wins_sell"] += 1
-                    else:
-                        stats["loss_sell"] += 1
-
-                if motivo_saida == "TP":
-                    stats["saida_tp"] += 1
-                    stats["tp_sl_valores"]["tp_atingiu"] += 1  # 🔬 DIAGNÓSTICO
-                elif motivo_saida == "SL":
-                    stats["saida_sl"] += 1
-                    stats["tp_sl_valores"]["sl_atingiu"] += 1  # 🔬 DIAGNÓSTICO
-                elif motivo_saida == "FLUXO":
-                    stats["saida_fluxo"] += 1
-                    if lucro_usd > 0:
-                        stats["fluxo_win"] += 1
-                else:  # TEMPO
-                    stats["saida_tempo"] += 1
-                    # 🔬 DIAGNÓSTICO: Calcular amplitude do timeout
-                    preco_max = df_sim["high"].iloc[i_entrada:index_saida+1].max()
-                    preco_min = df_sim["low"].iloc[i_entrada:index_saida+1].min()
-                    amplitude_pct = ((preco_max - preco_min) / preco_entrada) * 100
-                    stats["timeouts_amplitude"].append(amplitude_pct)
-
-                # 🔬 DIAGNÓSTICO: Winrate por hold time
-                hold_candles = index_saida - i
-                if hold_candles <= 3:
-                    bucket = "1-3"
-                elif hold_candles <= 7:
-                    bucket = "4-7"
-                elif hold_candles <= 15:
-                    bucket = "8-15"
-                else:
-                    bucket = "16+"
-                
-                stats["winrate_por_holdtime"][bucket]["total"] += 1
-                if lucro_usd > 0:
-                    stats["winrate_por_holdtime"][bucket]["wins"] += 1
-
-                stats["hold_time_total"] += (index_saida - i)
-                if lucro_usd > 0:
-                    stats["lucro_bruto"] += lucro_usd
-                else:
-                    stats["prejuizo_bruto"] += abs(lucro_usd)
-
-                # Atualiza capital
-                capital = float(capital + lucro_usd)
-
-                # 📊 V7: Registrar trade no analyzer
-                # V21: Corrigido - removido 'config' in analyzers
-                if analyzers and tgt in analyzers:
-                    timestamp_trade = None
-                    
-                    try:
-                        # V11: Prioriza colunas de tempo reais
-                        for col_time in ['ts', 'close_time', 'timestamp', 'datetime', 'date', 'open_time']:
-                            if col_time in df_sim.columns:
-                                ts_value = df_sim.iloc[i][col_time]
-                                if ts_value is not None and str(ts_value) != 'nan' and str(ts_value) != 'NaT':
-                                    timestamp_trade = ts_value
-                                    break
-                    except:
-                        pass
-                    
-                    # V11: Se não encontrou, SEMPRE cria timestamp sintético
-                    if timestamp_trade is None or str(timestamp_trade) in ['nan', 'NaT', 'None']:
-                        # Timestamp sintético: começa 2024-01-01, 15min por candle
-                        try:
-                            base_time = pd.Timestamp('2024-01-01 00:00:00')
-                            timestamp_trade = base_time + pd.Timedelta(minutes=15*i)
-                        except:
-                            # Último recurso: datetime simples
-                            from datetime import datetime, timedelta
-                            base_time = datetime(2024, 1, 1, 0, 0, 0)
-                            timestamp_trade = base_time + timedelta(minutes=15*i)
-                    
-                    try:
-                        analyzers[tgt].add_trade(
-                            signal_direction=direcao,
-                            win=(lucro_usd > 0),
-                            pnl=lucro_usd,
-                            timestamp=timestamp_trade
-                        )
-                    except Exception as e:
-                        # V11: Se falhar, mostra erro (não mais silent!)
-                        if stats.get('analyzer_errors', 0) == 0:  # Só mostra 1x
-                            print(f"⚠️ [DEBUG] Analyzer error para {tgt}: {e}")
-                            stats['analyzer_errors'] = 1
-
-                # Marca posição como aberta até index_saida (trava passa a funcionar)
-                posicionado = True
-
-                if capital > pico_capital:
-                    pico_capital = capital
-
-                dd = (pico_capital - capital) / max(1.0, pico_capital)
-                if dd > drawdown_max:
-                    drawdown_max = dd
-
-                if capital <= 0:
-                    capital = 0.0
-                    break
-
-        # -----------------------
-        # Relatório do target
-        # -----------------------
-        lucro_bruto = stats["lucro_bruto"]
-        prejuizo_bruto = stats["prejuizo_bruto"]
-        profit_factor = (lucro_bruto / max(1e-9, prejuizo_bruto)) if prejuizo_bruto > 0 else float("inf")
-
-        avg_hold = stats["hold_time_total"] / max(1, stats["trades_total"])
-
-        resultados = {
-            "capital_final": capital,
-            "lucro_prejuizo": capital - capital_inicial,
-            "retorno_total_pct": ((capital / max(1e-9, capital_inicial)) - 1) * 100.0,
-            "profit_factor": profit_factor,
-            "drawdown_max": drawdown_max * 100.0,
-            "stats": stats,
-            "trades_executados": []
-        }
-        resultados_por_target[tgt] = resultados
-
-        print("\n" + "=" * 60)
-        print(f"  {titulo_relatorio}: {tgt}")
-        print("=" * 60)
-        print("  [FINANCEIRO]")
-        print(f"  💰 Capital Inicial  : ${capital_inicial:,.2f}")
-        print(f"  💰 Lucro/Prejuízo   : ${resultados['lucro_prejuizo']:,.2f}")
-        print(f"  💰 Capital Final    : ${resultados['capital_final']:,.2f}")
-        print(f"  📈 Retorno Total    : {resultados['retorno_total_pct']:+.2f}%")
-        print(f"  📊 Profit Factor    : {resultados['profit_factor']:.2f}")
-        print("-" * 60)
-        print("  [RISCO]")
-        print(f"  📉 Drawdown Máximo  : {resultados['drawdown_max']:.2f}%")
-        print(f"  ⏱️  Hold Time Médio : {avg_hold:.1f} candles")
-        print("-" * 60)
-        print(f"  [FUNIL DE EXECUÇÃO]")
-        print(f"  🎯 Sinais Gerados   : {stats['sinais_total']}")
-        print(f"  🛡️  Vetados pelo Juiz: {stats['vetados_juiz']}")
-        print(f"  ⛔ Vetados Posição  : {stats['vetados_posicao']}")
-        
-        # V10: Estatísticas da regra anti-sequência
-        if stats.get('vetados_antisequencia', 0) > 0 or stats.get('aceitos_antisequencia_alta_conf', 0) > 0:
-            print(f"  🔄 Vetados Anti-Seq : {stats.get('vetados_antisequencia', 0)}")
-            print(f"     └─ Regra V10: 6+ mesma direção nos últimos 7 sinais = conf +20%")
-            if stats.get('aceitos_antisequencia_alta_conf', 0) > 0:
-                print(f"     └─ Aceitos c/ conf 90%+: {stats.get('aceitos_antisequencia_alta_conf', 0)}")
-        
-        if usar_fluxo:
-            print(f"  🌊 Vetados por Fluxo: {stats.get('vetados_fluxo', 0)}")
-            vetos_div = stats.get('vetos_divergencia', 0)
-            vetos_vol = stats.get('vetos_volume', 0)
-            vetos_vpin = stats.get('vetos_vpin', 0)
-            if vetos_div + vetos_vol + vetos_vpin > 0:
-                print(f"     └─ Divergências: {vetos_div} | Volume: {vetos_vol} | VPIN: {vetos_vpin}")
-            if stats.get('sinais_fluxo_elite', 0) > 0:
-                print(f"  ⭐ Sinais Elite (Score≥80%): {stats.get('sinais_fluxo_elite', 0)}")
-        print(f"  ⚡ Trades Executados: {stats['trades_total']}")
-        print(f"  📈 Utilização Sinal : {(stats['trades_total']/max(1, stats['sinais_total'])*100):.1f}%")
-        print("-" * 60)
-        print("  [DETALHAMENTO]")
-        print(f"  🟢 COMPRAS: {stats['trades_buy']} (Wins: {stats['wins_buy']} | Loss: {stats['loss_buy']})")
-        print(f"  🔴 VENDAS : {stats['trades_sell']} (Wins: {stats['wins_sell']} | Loss: {stats['loss_sell']})")
-        print(f"  🚪 SAÍDAS : TP: {stats['saida_tp']} | SL: {stats['saida_sl']} | Fluxo: {stats['saida_fluxo']} | Tempo: {stats['saida_tempo']}")
-        
-        # 🔬 DIAGNÓSTICOS
-        print("-" * 60)
-        print("  [🔬 DIAGNÓSTICOS]")
-        
-        # TESTE 1: Amplitude dos Timeouts
-        if stats["timeouts_amplitude"]:
-            ampls = stats["timeouts_amplitude"]
-            avg_ampl = np.mean(ampls)
-            count_050 = sum(1 for a in ampls if a < 0.5)
-            count_05_10 = sum(1 for a in ampls if 0.5 <= a < 1.0)
-            count_10plus = sum(1 for a in ampls if a >= 1.0)
-            print(f"  📊 TIMEOUTS - Amplitude Média: {avg_ampl:.2f}%")
-            print(f"     └─ <0.5%: {count_050} | 0.5-1%: {count_05_10} | >1%: {count_10plus}")
-        
-        # TESTE 2: Winrate por Hold Time
-        print(f"  📊 WINRATE POR HOLD TIME:")
-        for faixa in ["1-3", "4-7", "8-15", "16+"]:
-            data = stats["winrate_por_holdtime"][faixa]
-            if data["total"] > 0:
-                wr = (data["wins"] / data["total"]) * 100
-                print(f"     {faixa:4} candles: {wr:5.1f}% ({data['wins']:3}/{data['total']:3})")
-        
-        # TESTE 3: TP/SL Calibração
-        if stats["tp_sl_valores"]["tp_medio"]:
-            tp_avg = np.mean(stats["tp_sl_valores"]["tp_medio"])
-            sl_avg = np.mean(stats["tp_sl_valores"]["sl_medio"])
-            tp_hit_rate = (stats["tp_sl_valores"]["tp_atingiu"] / max(1, stats["trades_total"])) * 100
-            sl_hit_rate = (stats["tp_sl_valores"]["sl_atingiu"] / max(1, stats["trades_total"])) * 100
-            print(f"  📊 TP/SL CALIBRAÇÃO:")
-            print(f"     TP médio: {tp_avg:.2f}% | Hit Rate: {tp_hit_rate:.1f}%")
-            print(f"     SL médio: {sl_avg:.2f}% | Hit Rate: {sl_hit_rate:.1f}%")
-        
-        print("=" * 60)
-        
-        # 📊 V7: Imprimir relatório do Trade Analyzer
-        if analyzers and tgt in analyzers:
-            try:
-                analyzers[tgt].print_final_report(target_name=tgt)
-            except:
-                pass  # Não trava em caso de erro
-
-
-    return resultados_por_target
-
-# 🛡️ MÓDULO 10 - TESTE DE ROBUSTEZ E VALIDAÇÃO FINAL
-def modulo_10_teste_robustez(df_all, lista_targets, modelos_cache, probs_cache, meta_modelos_cache):
-    print("\n" + "="*60)
-    print("MÓDULO 10 — VALIDAÇÃO DE ROBUSTEZ (SHUFFLE TEST)")
-    print("="*60)
-    
-    # RENDER FIX: Desabilitar backtest (só treinar modelos)
-    rodar = "n"
-    print(">>> Backtest DESABILITADO no Render (só treino de modelos)")
-    
-    # K12/K6 também desabilitados
-    usar_k12 = False
-    usar_k6 = False
-    
-    if rodar != 's': return
-    
-    # 1. Coletar parâmetros do usuário
-    try:
-        capital_inicial = float(input("Capital Inicial (USD) [ex: 1000]: ") or 1000)
-        valor_mao = float(input("Valor de cada entrada (USD) [ex: 100]: ") or 100)
-        alavancagem = float(input("Alavancagem (x) [ex: 5]: ") or 5)
-        min_conf = float(input("Confiança Mínima (0.50 a 0.99) [ex: 0.75]: ") or 0.75)
-        
-        # 🚀 INPUT INTELIGENTE: Aceita 's', 'n' ou o valor do rigor diretamente
-        meta_input = input("Usar Juiz? (s/n ou digite o rigor ex: 0.85): ").strip().lower()
-        if meta_input in ['s', 'sim']:
-            usar_meta = True
-            corte_juiz = float(input("Rigor do Juiz (0.50 a 0.99) [ex: 0.85]: ") or 0.85)
-        elif meta_input in ['n', 'nao', 'não']:
-            usar_meta = False
-            corte_juiz = 0.85
-        else:
-            # Se digitou um número direto
-            try:
-                corte_juiz = float(meta_input)
-                usar_meta = True
-            except:
-                usar_meta, corte_juiz = True, 0.85
-        
-        # 🔥 V8: FILTRO DE AGRESSÃO DESABILITADO!
-        # ML PURO - sem EMA, RSI, MACD, etc
-        print("\n🚀 V8 - ML PURO (Sem indicadores velhos na decisão)")
-        print("   ✅ Modelo ML decide tudo")
-        print("   ❌ Sem EMA9/20/50")
-        print("   ❌ Sem aggression_delta")
-        print("   ❌ Sem VPIN")
-        print("   ❌ Sem flow_acceleration")
-        
-        usar_fluxo = False
-        modo_fluxo = "disabled"
-        
-        # 📊 TRADE ANALYZER V7 - SEMPRE CRIAR!
-        analyzers = {'config': {'pattern_length': 7, 'min_occurrences': 20}}
-        
-        if ANALYZER_AVAILABLE:
-            usar_analyzer = input("\n📊 Habilitar análise de horários/padrões? (s/n): ").strip().lower() == 's'
-            
-            if usar_analyzer:
-                pattern_length = input("Tamanho do padrão de sequência [padrão: 7]: ").strip()
-                pattern_length = int(pattern_length) if pattern_length.isdigit() else 7
-                
-                min_occurrences = input("Mínimo de ocorrências [padrão: 20]: ").strip()
-                min_occurrences = int(min_occurrences) if min_occurrences.isdigit() else 20
-                
-                analyzers['config']['pattern_length'] = pattern_length
-                analyzers['config']['min_occurrences'] = min_occurrences
-                print(f"✅ Analyzer configurado: padrões de {pattern_length} sinais, mín {min_occurrences} ocorrências")
-            else:
-                print("ℹ️ Análise desabilitada (mas K3/K6 funcionam)")
-        
-    except:
-        capital_inicial, valor_mao, alavancagem, min_conf = 1000, 100, 5, 0.75
-        usar_meta, corte_juiz = True, 0.85
-        usar_fluxo, modo_fluxo = True, "balanced"
-        analyzers = None
-        
-    # 2. Executar Backtest Real
-    print("\n" + "="*60)
-    print(">>> 1/2: EXECUTANDO BACKTEST REAL (MODELO TREINADO) <<<")
-    print("="*60)
-    if usar_fluxo:
-        print(f"🌊 Filtro de Agressão V2: MODO {modo_fluxo.upper()}")
-    resultados_reais = modulo_8_simulador_elite_v2(
-        df_all, lista_targets, modelos_cache, probs_cache, meta_modelos_cache,
-        capital_inicial, valor_mao, alavancagem, min_conf, usar_meta,
-        corte_juiz, usar_fluxo=usar_fluxo, modo_fluxo=modo_fluxo,
-        analyzers=analyzers,  # 📊 V7: Trade Analyzer
-        titulo_relatorio="RELATÓRIO DE PERFORMANCE INSTITUCIONAL"
-    )
-    
-    # 3. Executar Shuffle Test
-    print("\n" + "="*60)
-    print(">>> 2/2: EXECUTANDO SHUFFLE TEST (MODELO ALEATÓRIO) <<<")
-    print("="*60)
-    probs_cache_shuffled = realizar_teste_robustez(probs_cache)
-    
-    resultados_shuffled = modulo_8_simulador_elite_v2(
-        df_all, lista_targets, modelos_cache, probs_cache_shuffled, meta_modelos_cache,
-        capital_inicial, valor_mao, alavancagem, min_conf, usar_meta,
-        corte_juiz, usar_fluxo=usar_fluxo, modo_fluxo=modo_fluxo,
-        analyzers=None,  # 📊 V7: Sem analyzer no shuffle test
-        titulo_relatorio="RELATÓRIO DE PERFORMANCE (SHUFFLE TEST)"
-    )
-    
-    # 4. Comparação e Relatório Final
-    print("\n" + "█"*60)
-    print("█ MÓDULO 10 — RELATÓRIO DE ROBUSTEZ E VALIDAÇÃO FINAL")
-    print("█"*60)
-    
-    # 🚀 COMPARAR TODOS OS TARGETS (INCLUINDO K)
-    targets_para_comparar = list(resultados_reais.keys())
-    
-    for tgt in targets_para_comparar:
-        if tgt not in resultados_reais: continue
-        
-        real = resultados_reais[tgt]
-        shuf = resultados_shuffled.get(tgt, {})
-        
-        lucro_real = real['lucro_prejuizo']
-        lucro_shuf = shuf.get('lucro_prejuizo', 0)
-        trades_real = real['trades_executados']
-        trades_shuf = shuf.get('trades_executados', 0)
-        
-        # Cálculo do Score de Robustez
-        # Score = (Lucro Real - Lucro Shuffle) / Lucro Real * 100
-        # Se o lucro real for negativo, a robustez é calculada de forma diferente
-        if lucro_real > 0:
-            robustez_score = max(0, (lucro_real - lucro_shuf) / lucro_real * 100)
-        else:
-            # Se o modelo real perde, e o shuffle perde menos, o score é baixo.
-            # Se o modelo real perde, e o shuffle ganha, o score é muito baixo.
-            # Usamos a diferença absoluta para penalizar modelos perdedores.
-            robustez_score = 100 - (abs(lucro_real - lucro_shuf) / capital_inicial * 100)
-            robustez_score = max(0, robustez_score)
-            
-        print(f"\n--- VALIDAÇÃO DE ROBUSTEZ PARA TARGET: {tgt} ---")
-        print(f"  💰 Lucro Real (Modelo Treinado) : ${lucro_real:,.2f} (Trades: {trades_real})")
-        print(f"  🎲 Lucro Shuffle (Modelo Aleatório): ${lucro_shuf:,.2f} (Trades: {trades_shuf})")
-        print(f"  📈 Retorno Real: {real['retorno_total_pct']:+.2f}% | Drawdown: {real['drawdown_max']:.2f}%")
-        print(f"  📊 Retorno Shuffle: {shuf.get('retorno_total', 0):+.2f}% | Drawdown: {shuf.get('drawdown_max', 0):.2f}%")
-        print(f"  🛡️  SCORE DE ROBUSTEZ: {robustez_score:.2f}%")
-        
-        if robustez_score >= 70:
-            print("  ✅ ROBUSTEZ ALTA: O modelo tem uma vantagem estatística clara sobre o ruído.")
-        elif robustez_score >= 40:
-            print("  ⚠️ ROBUSTEZ MÉDIA: O modelo tem alguma vantagem, mas o overfitting é uma preocupação.")
-        else:
-            print("  ❌ ROBUSTEZ BAIXA: O modelo está próximo de um gerador de sinais aleatórios. Overfitting provável.")
-            
-    print("█"*60 + "\n")
-
-# ==============================================================================
-    # 🛡️ MÓDULO 12: VALIDAÇÃO FINANCEIRA (MODO FINAL PÓS-VARREDURA)
-    # ==============================================================================
-    # Adaptado para a estrutura confirmada: resultados_reais['target_K6']['stats']
-    
-    print("\n" + "="*60)
-    print("🛡️ VALIDANDO LÓGICA DE SEQUÊNCIA (GUARDIÃO K6)...")
-    print("="*60)
-
-    target_foco = 'target_K6'
-    trades_para_analise = []
-
-    # 1. TENTATIVA DE RECUPERAÇÃO DE DADOS
-    # Fonte Primária: Dicionário de Resultados
-    if 'resultados_reais' in locals() and target_foco in resultados_reais:
-        pacote = resultados_reais[target_foco]
-        
-        # O Claude disse que 'trades_executados' pode estar vazio, mas vamos checar
-        if 'trades_executados' in pacote and len(pacote['trades_executados']) > 0:
-            trades_para_analise = pacote['trades_executados']
-            print("✔ Dados recuperados de 'trades_executados'.")
-            
-        # Fonte Secundária: Variável Global df_k6_results (Geralmente sobra na memória)
-        elif 'df_k6_results' in globals() and not df_k6_results.empty:
-            trades_para_analise = df_k6_results.to_dict('records')
-            print("✔ Dados recuperados de 'df_k6_results' (Backup Global).")
-            
-        # Fonte Terciária: Tentar reconstruir via log (se disponível)
-        elif 'log_trades' in pacote:
-            trades_para_analise = pacote['log_trades']
-            print("✔ Dados recuperados de 'log_trades'.")
-
-    # 2. EXECUÇÃO DA LÓGICA
-    if len(trades_para_analise) > 0:
-        print(f"🚀 Analisando sequência de {len(trades_para_analise)} trades...")
-        
-        lucros = []
-        sinais_visuais = []
-        
-        # Padronização de dados
-        for t in trades_para_analise:
-            # Lucro
-            pnl = t.get('lucro', t.get('pnl', t.get('profit', t.get('retorno', 0))))
-            lucros.append(pnl)
-            
-            # Sinal
-            raw_sig = str(t.get('sinal', t.get('side', t.get('tipo', '')))).upper()
-            if 'BUY' in raw_sig or '1' in raw_sig or 'COMPRA' in raw_sig: 
-                sinais_visuais.append('B')
-            else: 
-                sinais_visuais.append('S')
-
-        # --- APRENDIZADO ---
-        memoria = {}
-        contagem = {}
-        vitorias = {}
-        
-        for i in range(7, len(sinais_visuais)):
-            seq = tuple(sinais_visuais[i-7:i])
-            win = 1 if lucros[i] > 0 else 0
-            
-            if seq not in contagem: contagem[seq]=0; vitorias[seq]=0
-            contagem[seq] += 1
-            vitorias[seq] += win
-            
-        for seq, total in contagem.items():
-            if total >= 50: # Filtro de 50
-                memoria[seq] = vitorias[seq] / total
-        
-        print(f"✔ Inteligência Criada: {len(memoria)} padrões monitorados.")
-
-        # --- SIMULAÇÃO ---
-        saldo_orig = sum(lucros)
-        saldo_filt = 0
-        bloq = 0
-        
-        for i in range(7, len(sinais_visuais)):
-            pnl = lucros[i]
-            seq = tuple(sinais_visuais[i-7:i])
-            
-            if seq in memoria and memoria[seq] < 0.40: # CORTE < 40%
-                bloq += 1
-            else:
-                saldo_filt += pnl
-        
-        delta = saldo_filtrado - saldo_orig if 'saldo_filtrado' in locals() else saldo_filt - saldo_orig
-        
-        print("-" * 50)
-        print(f"🚫 Bloqueados: {bloq}")
-        print(f"💰 Original  : ${saldo_orig:,.2f}")
-        print(f"🚀 Filtrado  : ${saldo_filt:,.2f}")
-        print(f"📈 Diferença : ${delta:,.2f}")
-        print("-" * 50)
-        
-	
-# Executar Módulo 10 com Meta-Labeling e Shuffle Test
-modulo_10_teste_robustez(df_all, lista_targets, modelos_cache, probs_cache, meta_modelos_cache)
-
-
-
-# ========================================================================
-# 🟢 BLOCOS DE ELITE — ADICIONADOS AO FINAL (SEM MUTILAR O ORIGINAL)
-# ========================================================================
-
-def otimizar_hiperparametros_v25(X_train, y_train, X_val, y_val, n_trials=30):
-    try:
-        import optuna
-    except ImportError:
-        return None
-    def objective(trial):
-        params = {
-            'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
-            'learning_rate': trial.suggest_float('learning_rate', 0.001, 0.1, log=True),
-            'max_depth': trial.suggest_int('max_depth', 3, 12),
-            'num_leaves': trial.suggest_int('num_leaves', 20, 150),
-            'verbose': -1
-        }
-        model = LGBMClassifier(**params)
-        model.fit(X_train, y_train)
-        preds = model.predict(X_val)
-        return accuracy_score(y_val, preds)
-    study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=n_trials)
-    return study.best_params
-
-def treinar_meta_model_v25(X_train, y_train, X_val, y_val, model_primario):
-    from sklearn.ensemble import RandomForestClassifier
-    y_proba_val = model_primario.predict_proba(X_val)
-    y_pred_val = np.argmax(y_proba_val, axis=1)
-    y_meta = (y_pred_val == y_val).astype(int)
-    conf_val = np.max(y_proba_val, axis=1).reshape(-1, 1)
-    X_meta = np.hstack([X_val, conf_val])
-    meta_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-    meta_model.fit(X_meta, y_meta)
-    return meta_model
-
-# =====================================================================
-# 🔬 AUDITORIA CIENTÍFICA FINAL (MÓDULO EXTERNO PARA V21)
-# =====================================================================
-import numpy as np
-
-def auditoria_v21_final(lista_retornos, nome_modelo="K6_V21"):
-    """
-    Roda Monte Carlo e p-Value sobre os resultados do V21 sem tocar na lógica.
-    """
-    if not lista_retornos or len(lista_retornos) < 10:
-        print(f"⚠️ [AUDITORIA] Dados insuficientes em '{nome_modelo}'.")
-        return
-
-    print(f"\n{'='*60}")
-    print(f"🕵️ RELATÓRIO DE ROBUSTEZ CIENTÍFICA: {nome_modelo}")
-    print(f"{'='*60}")
-
-    # Preparação dos dados
-    rets = np.array(lista_retornos)
-    cap_inicial = 1000
-    n_sim = 10000 # 10.000 simulações de estresse
-    
-    # 1. MONTE CARLO (Teste de Ruína e Caminho)
-    finais = []
-    ruinas = 0
-    for _ in range(n_sim):
-        # Embaralha os trades para ver se o lucro resiste à mudança de ordem
-        sim_rets = np.random.choice(rets, size=len(rets), replace=True)
-        curva = cap_inicial * np.cumprod(1 + sim_rets)
-        finais.append(curva[-1])
-        if np.any(curva <= (cap_inicial * 0.2)): # Consideramos quebra se cair 80%
-            ruinas += 1
-            
-    # 2. P-VALUE (Teste contra a Sorte)
-    vol = np.std(rets)
-    random_bench = np.random.normal(0, vol, size=(10000, len(rets)))
-    finais_random = cap_inicial * np.prod(1 + random_bench, axis=1)
-    lucro_real = cap_inicial * np.prod(1 + rets)
-    
-    # Qual a chance de um aleatório bater o seu robô?
-    p_value = np.sum(finais_random >= lucro_real) / 10000
-
-    # 3. EXIBIÇÃO DOS DADOS
-    print(f"📊 Trades Analisados: {len(rets)}")
-    print(f"💰 Lucro Real do V21: {((lucro_real/cap_inicial)-1)*100:.1f}%")
-    print(f"------------------------------------------------------------")
-    print(f"🧪 SIGNIFICÂNCIA ESTATÍSTICA (p-Value): {p_value:.6f}")
-    print(f"   (Meta: < 0.05 para ser considerado real)")
-    print(f"------------------------------------------------------------")
-    print(f"🎲 RISCO DE RUÍNA (Monte Carlo): {(ruinas/n_sim)*100:.2f}%")
-    print(f"   (Probabilidade de quebrar a conta em 10 mil cenários)")
-    print(f"{'='*60}\n")
-
-# ==============================================================================
-# 🚀 EXPORTADOR FINAL (RECUPERAÇÃO VIA DISCO)
-# ==============================================================================
-import joblib
-import os
-
-print("\n" + "█"*60)
-print("📦 GERANDO SISTEMA VIA RECUPERAÇÃO DE DISCO...")
-print("█"*60)
-
-try:
-    # 1. Tenta carregar o scaler e kmeans que salvamos no passo anterior
-    scaler_path = os.path.join('modelos_salvos', 'scaler_regimes.pkl')
-    kmeans_path = os.path.join('modelos_salvos', 'kmeans_regimes.pkl')
-    
-    if os.path.exists(scaler_path):
-        scaler_final = joblib.load(scaler_path)
-        print(f"✅ Scaler carregado: {scaler_path}")
-    else:
-        scaler_final = None
-        print(f"❌ Arquivo '{scaler_path}' não encontrado.")
-    
-    if os.path.exists(kmeans_path):
-        kmeans_final = joblib.load(kmeans_path)
-        print(f"✅ KMeans carregado: {kmeans_path}")
-    else:
-        kmeans_final = None
-        print(f"❌ Arquivo '{kmeans_path}' não encontrado.")
-
-    # 2. Localiza o modelo K6 no cache
-    # Se o cache estiver vazio, precisamos verificar o nome da variável no seu script
-    modelo_k6 = modelos_cache.get('target_K6') if 'modelos_cache' in globals() else None
-
-    if scaler_final and kmeans_final and modelo_k6:
-        pacote = {
-            'modelo': modelo_k6,
-            'scaler': scaler_final,
-            'kmeans': kmeans_final,
-            'info': 'V27_SCALER_KMEANS_COMPLETO'
-        }
-        pacote_path = os.path.join('modelos_salvos', 'SISTEMA_K6_COMPLETO.pkl')
-        joblib.dump(pacote, pacote_path)
-        print(f"✅ SUCESSO! Sistema completo salvo: {pacote_path}")
-        print(f"   ├─ Modelo K6")
-        print(f"   ├─ Scaler")
-        print(f"   └─ KMeans")
-    else:
-        if not modelo_k6: print("❌ Modelo K6 não encontrado no modelos_cache.")
-        if not scaler_final: print("❌ Scaler não pôde ser recuperado.")
-        if not kmeans_final: print("❌ KMeans não pôde ser recuperado.")
-
-except Exception as e:
-    print(f"❌ Erro no processo: {e}")
-
-print("█"*60 + "\n")
-
-# ============================================================================
-# 🔧 FUNÇÕES PARA CARREGAR SCALER E KMEANS EM PRODUÇÃO
-# ============================================================================
-
-def carregar_sistema_completo(diretorio='modelos_salvos'):
-    """
-    Carrega scaler, kmeans e modelo salvos durante o treinamento.
-    
-    Returns:
-        dict: {'modelo': modelo_k6, 'scaler': scaler, 'kmeans': kmeans}
-              ou None se falhar
-    """
-    import joblib
-    import os
-    
-    try:
-        pacote_path = os.path.join(diretorio, 'SISTEMA_K6_COMPLETO.pkl')
-        
-        if os.path.exists(pacote_path):
-            pacote = joblib.load(pacote_path)
-            print(f"✅ Sistema completo carregado: {pacote_path}")
-            print(f"   ├─ Modelo: {type(pacote['modelo']).__name__}")
-            print(f"   ├─ Scaler: {type(pacote['scaler']).__name__}")
-            print(f"   └─ KMeans: {type(pacote['kmeans']).__name__}")
-            return pacote
-        else:
-            print(f"❌ Pacote não encontrado: {pacote_path}")
-            print(f"   Tentando carregar componentes separados...")
-            
-            # Fallback: carregar separadamente
-            scaler_path = os.path.join(diretorio, 'scaler_regimes.pkl')
-            kmeans_path = os.path.join(diretorio, 'kmeans_regimes.pkl')
-            
-            if not os.path.exists(scaler_path) or not os.path.exists(kmeans_path):
-                print(f"❌ Componentes não encontrados")
-                return None
-            
-            scaler = joblib.load(scaler_path)
-            kmeans = joblib.load(kmeans_path)
-            
-            print(f"✅ Componentes carregados separadamente:")
-            print(f"   ├─ Scaler: {scaler_path}")
-            print(f"   └─ KMeans: {kmeans_path}")
-            
-            return {'scaler': scaler, 'kmeans': kmeans, 'modelo': None}
-        
-    except Exception as e:
-        print(f"❌ Erro ao carregar sistema: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-
-def aplicar_regimes_em_producao(df, scaler=None, kmeans=None, diretorio='modelos_salvos'):
-    """
-    Aplica detecção de regimes em dados novos usando scaler/kmeans salvos.
-    
-    Args:
-        df: DataFrame com dados novos (já com features calculadas)
-        scaler: StandardScaler carregado (opcional)
-        kmeans: KMeans carregado (opcional)
-        diretorio: diretório dos modelos salvos
-    
-    Returns:
-        DataFrame com coluna 'market_regime' adicionada
-    """
-    import joblib
-    import os
-    
-    # Carregar automaticamente se não fornecidos
-    if scaler is None or kmeans is None:
-        sistema = carregar_sistema_completo(diretorio)
-        if sistema is None:
-            print("❌ Não foi possível carregar scaler/kmeans")
-            df['market_regime'] = 0
-            return df
-        scaler = sistema['scaler']
-        kmeans = sistema['kmeans']
-    
-    try:
-        # Features para regime (mesmas do treinamento)
-        regime_features = ['vol_realized', 'rsi_14', 'atr14', 'slope20']
-        
-        # Verificar se features existem
-        missing = [f for f in regime_features if f not in df.columns]
-        if missing:
-            print(f"⚠️ Features faltando para regimes: {missing}")
-            df['market_regime'] = 0
-            return df
-        
-        # Aplicar scaler (TRANSFORM, não FIT_TRANSFORM!)
-        X_regime = df[regime_features].fillna(0).values
-        X_scaled = scaler.transform(X_regime)
-        
-        # Predizer regime
-        df['market_regime'] = kmeans.predict(X_scaled)
-        
-        regimes_count = df['market_regime'].value_counts().to_dict()
-        print(f"✅ Regimes aplicados: {regimes_count}")
-        
-        return df
-        
-    except Exception as e:
-        print(f"❌ Erro ao aplicar regimes: {e}")
-        import traceback
-        traceback.print_exc()
-        df['market_regime'] = 0
-        return df
-
-
-# ============================================================================
-# 📝 EXEMPLO DE USO EM PRODUÇÃO
-# ============================================================================
-"""
-USO COMPLETO EM PRODUÇÃO:
-
-# 1. CARREGAR SISTEMA COMPLETO
-sistema = carregar_sistema_completo()
-modelo_k6 = sistema['modelo']
-scaler = sistema['scaler']
-kmeans = sistema['kmeans']
-
-# 2. PREPARAR DADOS NOVOS
-df_novo = pd.read_csv('dados_live.csv')
-df_novo = feature_engine(df_novo)
-df_novo = adicionar_features_avancadas(df_novo)
-
-# 3. APLICAR REGIMES
-df_novo = aplicar_regimes_em_producao(df_novo, scaler, kmeans)
-
-# 4. FAZER PREDIÇÕES
-features = [...] # mesmas features do treinamento
-X = df_novo[features].iloc[-1:]
-probs = modelo_k6.predict_proba(X)
-
-# 5. TOMAR DECISÃO
-p_up = probs[0][classes.index(1)]
-if p_up > 0.75:
-    print(f"🚀 COMPRAR! Confiança: {p_up:.2%}")
-"""
-
-print("\n✅ Funções de carregamento adicionadas!")
-print("   - carregar_sistema_completo()")
-print("   - aplicar_regimes_em_producao()")
-
-# ============================================================================
-# 🚀 CRIAÇÃO DO ZIP FINAL E UPLOAD CATBOX
-# ============================================================================
+# ======================================================================
+# BLOCO REMOVIDO: Backtest/Simulação/Análise
+# (Linhas originais: 4302-5516)
+# V27 já faz backtest - Render só treina modelos
+# ======================================================================
 
 print("\n" + "=" * 80)
 print("📦 CRIANDO ZIP FINAL COM TODOS OS ARQUIVOS")
@@ -5572,17 +4276,26 @@ try:
     
     if link:
         print("\n" + "=" * 80)
-        print("🎉 UPLOAD CONCLUÍDO COM SUCESSO!")
+        print("🎉 UPLOAD CATBOX CONCLUÍDO COM SUCESSO!")
         print("=" * 80)
-        print(f"🔗 LINK PARA DOWNLOAD:")
+        print("📦 CONTEÚDO DO ZIP:")
+        print("   ✅ CSVs (todos os timeframes)")
+        print("   ✅ PKLs (modelos treinados)")
+        print("   ✅ Scaler e KMeans")
+        print("   ✅ Relatórios e JSONs")
+        print("=" * 80)
+        print(f"🔗 LINK CATBOX PARA DOWNLOAD:")
         print(f"   {link}")
         print("=" * 80)
-        print("⚠️ Link expira em 72h se não for acessado!")
+        print(f"📦 Tamanho: {zip_size:.2f} MB")
+        print("⚠️  Link expira em 72h se não for acessado!")
+        print("=" * 80)
+        print("\n🎯 COPIE O LINK ACIMA PARA BAIXAR O ZIP COMPLETO!")
         print("=" * 80)
     else:
         print("❌ Falha no upload Catbox")
-        print(f"   ZIP local disponível: {ZIP_PATH}")
-        print(f"   Acesse: https://SEU-APP.onrender.com/download")
+        print(f"   ZIP salvo em: {ZIP_PATH}")
+        print(f"   Tamanho: {zip_size:.2f} MB")
 
 except Exception as e:
     print(f"❌ Erro ao criar ZIP: {e}")
@@ -5594,10 +4307,9 @@ except Exception as e:
 # ============================================================================
 
 print("\n" + "=" * 80)
-print("🌐 SERVIDOR HTTP ATIVO")
-print(f"   Acesse: https://SEU-APP.onrender.com/download")
+print("🌐 PROCESSO FINALIZADO - SERVIDOR HTTP ATIVO")
 print("=" * 80)
-print(">>> Serviço mantido ativo para download...")
+print(">>> Serviço mantido ativo...")
 
 # Mantém o script rodando (Render)
 while True:
