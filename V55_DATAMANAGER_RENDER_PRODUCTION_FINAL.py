@@ -7,8 +7,8 @@
 #
 # ██ CONFIGURAÇÃO - MODIFIQUE AQUI ██
 SYMBOL = "PENDLEUSDT"
-START_DT_STR = "2025-11-20"  # Data início (YYYY-MM-DD) - 2 MESES
-END_DT_STR = "2025-12-31"    # Data fim (YYYY-MM-DD) - PROCESSA EM ~20MIN
+START_DT_STR = "2025-11-18"  # Data início (YYYY-MM-DD) - 2 MESES
+END_DT_STR = "2025-12-30"    # Data fim (YYYY-MM-DD) - PROCESSA EM ~20MIN
 MIN_WHALE_USD = 500          # Filtro whale em USD
 
 # ██ CONFIGURAÇÃO DE TREINO (SEM INPUTS INTERATIVOS) ██
@@ -2074,7 +2074,8 @@ def montar_matriz(df: pd.DataFrame, alvo: str):
         "high_fut","low_fut",
         "impulse_count",
         "ret_max", "ret_min", "ret_max_temp", "ret_min_temp", # 🔴 PATCH ANTI-LEAKAGE
-        "total_vol_agg", "buy_vol_agg", "sell_vol_agg" # Colunas auxiliares de micro (não são features diretas)
+        "total_vol_agg", "buy_vol_agg", "sell_vol_agg", # Colunas auxiliares de micro (não são features diretas)
+        "buy_vol", "sell_vol", # 🔴 PATCH: Duplicados de buy_vol_agg/sell_vol_agg (evitar 12 features extras)
         # 🔴 FRACTAIS - VAZAMENTO (shift negativo)
         "fractal_high",
         "fractal_low",
