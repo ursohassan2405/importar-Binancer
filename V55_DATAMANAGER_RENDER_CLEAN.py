@@ -8,7 +8,7 @@
 # ██ CONFIGURAÇÃO - MODIFIQUE AQUI ██
 SYMBOL = "PENDLEUSDT"
 START_DT_STR = "2025-01-01"  # Data início (YYYY-MM-DD)
-END_DT_STR = "2025-12-31"    # Data fim (YYYY-MM-DD)
+END_DT_STR = "2025-12-01"    # Data fim (YYYY-MM-DD)
 MIN_WHALE_USD = 500          # Filtro whale em USD
 
 # ██ CONFIGURAÇÃO DE TREINO (SEM INPUTS INTERATIVOS) ██
@@ -158,30 +158,28 @@ END_DT = datetime.strptime(END_DT_STR, "%Y-%m-%d").replace(hour=23, minute=59, s
 # ============================================================
 # 🔧 PATCH RENDER: Detectar e usar disco persistente
 # ============================================================
-# Render monta discos em /opt/render/project/disk ou via variável
-RENDER_DISK = os.environ.get('RENDER_DISK_PATH', None)
+# CRÍTICO: Render precisa de disco anexado!
+RENDER_DISK = os.environ.get('RENDER_DISK_PATH', '/opt/render/project/disk')
 
-# Tentar paths comuns do Render se variável não existe
-if not RENDER_DISK:
-    for possible_path in ["/opt/render/project/disk", "/mnt/data", "/data"]:
-        if os.path.exists(possible_path):
-            RENDER_DISK = possible_path
-            break
-
-# Configurar BASE_DIR baseado no ambiente
-if RENDER_DISK:
+# Se estiver no Render (detecta pela variável PORT), FORÇA uso do disco
+if os.environ.get('PORT'):
+    # Estamos no Render - SEMPRE usar disco
     BASE_DIR = RENDER_DISK
     print("="*70, flush=True)
-    print("🚀 RENDER DISK PERSISTENTE DETECTADO!", flush=True)
+    print("🚀 RENDER DETECTADO - USANDO DISCO PERSISTENTE!", flush=True)
     print(f"   Path: {BASE_DIR}", flush=True)
-    print(f"   ✅ Arquivos (CSVs, PKLs) serão PRESERVADOS entre deploys!", flush=True)
+    print("   ✅ Arquivos (CSVs, PKLs) serão PRESERVADOS entre deploys!", flush=True)
     print("="*70, flush=True)
+    
+    # Criar diretório se não existir
+    os.makedirs(BASE_DIR, exist_ok=True)
 else:
+    # Ambiente local
     BASE_DIR = "."
     print("="*70, flush=True)
     print("💻 AMBIENTE LOCAL DETECTADO", flush=True)
-    print(f"   Path: {os.path.abspath(BASE_DIR)}", flush=True)
-    print(f"   ⚠️  Arquivos em diretório de trabalho (não persistente)", flush=True)
+    print(f"   Path: {os.getcwd()}", flush=True)
+    print("   ⚠️  Arquivos em diretório de trabalho (não persistente)", flush=True)
     print("="*70, flush=True)
 
 # Paths finais (funcionam em local E Render)
@@ -261,7 +259,7 @@ def process_binance_data(df):
     })
     return df_processed.dropna()
 
-def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=500, chunksize=200_000):
+def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val_usd=500, chunksize=500_000):
     print(f">>> Gerando dataset {timeframe_min}m...", flush=True)
     buckets = {}
     chunks_processados = 0
@@ -272,35 +270,51 @@ def gerar_timeframe_tratado(csv_agg_path, csv_tf_path, timeframe_min=15, min_val
             if chunks_processados % 10 == 0:
                 print(f"   Processados {chunks_processados} chunks...", flush=True)
             
-            chunk["ts"] = pd.to_numeric(chunk["ts"], errors="coerce")
-            chunk["price"] = pd.to_numeric(chunk["price"], errors="coerce")
-            chunk["qty"] = pd.to_numeric(chunk["qty"], errors="coerce")
-            chunk["side"] = pd.to_numeric(chunk["side"], errors="coerce")
+            # OTIMIZAÇÃO: Conversão em batch (mais rápido que linha por linha)
+            chunk = chunk.astype({
+                'ts': 'int64',
+                'price': 'float64',
+                'qty': 'float64',
+                'side': 'int8'
+            }, errors='ignore')
+            
             chunk = chunk.dropna(subset=["ts", "price", "qty", "side"])
             if chunk.empty:
                 continue
-            dt = pd.to_datetime(chunk["ts"].astype("int64"), unit="ms", utc=True)
-            bucket_ms = (dt.dt.floor(f"{timeframe_min}min").astype("int64") // 10**6).astype("int64")
-            chunk = chunk.assign(bucket_ms=bucket_ms)
-            val_usd = chunk["price"] * chunk["qty"]
-            is_whale = val_usd >= float(min_val_usd)
-            for ts_ms, price, qty, side, bms, whale in zip(
-                chunk["ts"].astype("int64"), chunk["price"].astype(float),
-                chunk["qty"].astype(float), chunk["side"].astype(int),
-                chunk["bucket_ms"].astype("int64"), is_whale.astype(bool)
-            ):
+            
+            # OTIMIZAÇÃO: Operações vetorizadas (muito mais rápido)
+            dt = pd.to_datetime(chunk["ts"], unit="ms", utc=True)
+            chunk["bucket_ms"] = (dt.dt.floor(f"{timeframe_min}min").astype("int64") // 10**6).astype("int64")
+            chunk["val_usd"] = chunk["price"] * chunk["qty"]
+            chunk["is_whale"] = chunk["val_usd"] >= float(min_val_usd)
+            
+            # OTIMIZAÇÃO: GroupBy ao invés de loop Python (10-100x mais rápido)
+            for bms, group in chunk.groupby("bucket_ms"):
                 st = buckets.get(bms)
                 if st is None:
-                    st = {"ts": int(bms), "open": float(price), "high": float(price), "low": float(price), "close": float(price), "volume": 0.0, "buy_vol": 0.0, "sell_vol": 0.0}
+                    st = {
+                        "ts": int(bms),
+                        "open": float(group["price"].iloc[0]),
+                        "high": float(group["price"].max()),
+                        "low": float(group["price"].min()),
+                        "close": float(group["price"].iloc[-1]),
+                        "volume": 0.0,
+                        "buy_vol": 0.0,
+                        "sell_vol": 0.0
+                    }
                     buckets[bms] = st
                 else:
-                    if price > st["high"]: st["high"] = float(price)
-                    if price < st["low"]: st["low"] = float(price)
-                    st["close"] = float(price)
-                st["volume"] += float(qty)
-                if whale:
-                    if side == 0: st["buy_vol"] += float(qty)
-                    else: st["sell_vol"] += float(qty)
+                    st["high"] = max(st["high"], float(group["price"].max()))
+                    st["low"] = min(st["low"], float(group["price"].min()))
+                    st["close"] = float(group["price"].iloc[-1])
+                
+                st["volume"] += float(group["qty"].sum())
+                
+                # Volume de whales
+                whales = group[group["is_whale"]]
+                if not whales.empty:
+                    st["buy_vol"] += float(whales[whales["side"] == 0]["qty"].sum())
+                    st["sell_vol"] += float(whales[whales["side"] == 1]["qty"].sum())
         
         print(f"   Total: {chunks_processados} chunks processados", flush=True)
         
@@ -414,18 +428,27 @@ def extrair_dados_binance():
     print("="*70, flush=True)
     if success_count == 0: raise RuntimeError("Nenhum dado!")
     
-    print("\n📊 GERANDO TIMEFRAMES (pode demorar 10-15min)...")
+    print("\n📊 GERANDO TIMEFRAMES...")
     print("="*70, flush=True)
     
     timeframes = {"15m": 15, "30m": 30, "1h": 60, "4h": 240, "8h": 480, "1d": 1440}
     csv_paths = {}
     for label, tf_min in timeframes.items():
-        print(f"\n🔄 Processando {label}...", flush=True)
         csv_tf_path = os.path.join(OUT_DIR, f"{SYMBOL}_{label}.csv")
-        if os.path.exists(csv_tf_path): 
-            os.remove(csv_tf_path)
-            print(f"   Removido CSV antigo: {label}", flush=True)
         
+        # 🚀 OTIMIZAÇÃO: Não regenerar se já existe e é válido
+        if os.path.exists(csv_tf_path):
+            try:
+                df_check = pd.read_csv(csv_tf_path, nrows=1)
+                file_size = os.path.getsize(csv_tf_path) / 1024  # KB
+                if file_size > 10:  # Arquivo válido (>10KB)
+                    print(f"✅ {label} JÁ EXISTE ({file_size/1024:.1f} MB) - Pulando", flush=True)
+                    csv_paths[label] = csv_tf_path
+                    continue
+            except:
+                pass  # Se erro, regenera
+        
+        print(f"\n🔄 Processando {label}...", flush=True)
         gerar_timeframe_tratado(CSV_AGG_PATH, csv_tf_path, tf_min, MIN_WHALE_USD)
         csv_paths[label] = csv_tf_path
         print(f"✅ {label} concluído!", flush=True)
@@ -907,6 +930,63 @@ print(f">>> Servidor HTTP iniciado na porta {os.environ.get('PORT', 10000)}")
 
 # Extrai dados da Binance
 csv_paths = extrair_dados_binance()
+
+print("\n" + "="*80)
+print("🎉 CSVs GERADOS COM SUCESSO!")
+print("="*80)
+for label, path in csv_paths.items():
+    size_mb = os.path.getsize(path) / (1024*1024)
+    print(f"   ✅ {label:4s}: {size_mb:6.1f} MB")
+print("="*80)
+
+# 🚀 GERAR ZIP E LINK CATBOX IMEDIATAMENTE (ANTES DO TREINO)
+print("\n📦 CRIANDO ZIP COM CSVs (para download rápido)...")
+ZIP_CSVS_PATH = os.path.join(BASE_DIR, f"{SYMBOL}_CSVs_ONLY.zip")
+
+try:
+    import zipfile
+    with zipfile.ZipFile(ZIP_CSVS_PATH, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for label, csv_path in csv_paths.items():
+            if os.path.exists(csv_path):
+                arcname = os.path.basename(csv_path)
+                zf.write(csv_path, arcname)
+                print(f"   📊 Adicionado: {arcname}")
+    
+    zip_size = os.path.getsize(ZIP_CSVS_PATH) / (1024 * 1024)
+    print(f"\n✅ ZIP CSVs criado: {zip_size:.2f} MB")
+    print(f"   Path: {ZIP_CSVS_PATH}")
+    
+    # UPLOAD PARA CATBOX
+    print("\n🚀 FAZENDO UPLOAD PARA CATBOX (CSVs)...")
+    link_csvs = upload_catbox(ZIP_CSVS_PATH)
+    
+    if link_csvs:
+        print("\n" + "="*80)
+        print("🎉 LINK #1 PRONTO - CSVs APENAS (SEM PKLs)")
+        print("="*80)
+        print("📦 CONTEÚDO:")
+        print("   ✅ PENDLEUSDT_15m.csv")
+        print("   ✅ PENDLEUSDT_30m.csv")
+        print("   ✅ PENDLEUSDT_1h.csv")
+        print("   ✅ PENDLEUSDT_4h.csv")
+        print("   ✅ PENDLEUSDT_8h.csv")
+        print("   ✅ PENDLEUSDT_1d.csv")
+        print("   ❌ Modelos PKLs (ainda treinando...)")
+        print("="*80)
+        print(f"🔗 LINK CSVs (download rápido):")
+        print(f"   {link_csvs}")
+        print("="*80)
+        print("⏱️  TREINO EM ANDAMENTO...")
+        print("   → Link #2 (CSVs + PKLs) virá em ~1 hora")
+        print("   → Você pode baixar os CSVs agora!")
+        print("="*80)
+    else:
+        print("⚠️  Upload Catbox falhou, mas ZIP está disponível localmente")
+        
+except Exception as e:
+    print(f"❌ Erro criando ZIP de CSVs: {e}")
+    import traceback
+    traceback.print_exc()
 
 # Define variáveis para treino
 csv_path = csv_paths["15m"]
@@ -4196,12 +4276,19 @@ try:
     
     if link:
         print("\n" + "=" * 80)
-        print("🎉 UPLOAD CONCLUÍDO COM SUCESSO!")
+        print("🎉 UPLOAD COMPLETO CONCLUÍDO COM SUCESSO!")
         print("=" * 80)
-        print(f"🔗 LINK PARA DOWNLOAD:")
+        print("📦 CONTEÚDO DO ZIP:")
+        print("   ✅ CSVs (todos os timeframes)")
+        print("   ✅ PKLs (modelos treinados)")
+        print("   ✅ Scaler e KMeans")
+        print("   ✅ Relatórios e JSONs")
+        print("=" * 80)
+        print(f"🔗 LINK FINAL (CSVs + PKLs + TUDO):")
         print(f"   {link}")
         print("=" * 80)
-        print("⚠️ Link expira em 72h se não for acessado!")
+        print("⚠️  Link expira em 72h se não for acessado!")
+        print("⚠️  Total: {zip_size:.2f} MB")
         print("=" * 80)
     else:
         print("❌ Falha no upload Catbox")
