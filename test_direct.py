@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+from datetime import datetime
 
 path = "/data/PENDLEUSDT_DATA"
 
@@ -15,6 +16,10 @@ if os.path.exists(path):
     for f in sorted(files):
         full = os.path.join(path, f)
         size_mb = os.path.getsize(full) / (1024*1024)
+        
+        # Data de modificação
+        mtime = os.path.getmtime(full)
+        data_modificacao = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
         
         # Contar linhas se for CSV
         linhas = "N/A"
@@ -39,7 +44,9 @@ if os.path.exists(path):
                 linhas = f"ERRO ao ler: {e}"
         
         print(f"  📄 {f}")
-        print(f"     └─ {size_mb:.2f} MB | {linhas}")
+        print(f"     ├─ Tamanho: {size_mb:.2f} MB")
+        print(f"     ├─ Modificado: {data_modificacao}")
+        print(f"     └─ Conteúdo: {linhas}")
         print()
 else:
     print(f"❌ Diretório NÃO EXISTE!")
