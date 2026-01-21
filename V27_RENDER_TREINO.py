@@ -794,20 +794,36 @@ print("\n================= IA_CRIPTO — V25 FINAL REAL =================\n")
 # INPUTS CONVERSACIONAIS — CONFIGURAÇÃO GERAL
 # ========================================================================
 
-# Detectar Render e usar path padrão
-if os.path.exists("/opt/render"):
-    csv_path = "/opt/render/project/.data/PENDLEUSDT_DATA/PENDLEUSDT_15m.csv"
-    print(f"🌐 RENDER: Usando {csv_path}")
+# Detectar Render e encontrar CSVs (mesma lógica do audit)
+if os.path.exists("/opt/render/project"):
+    # Render: buscar na estrutura .data
+    base_dir = "/opt/render/project/.data"
+    
+    # Procurar subdiretório PENDLEUSDT_DATA
+    if os.path.exists(f"{base_dir}/PENDLEUSDT_DATA"):
+        csv_path = f"{base_dir}/PENDLEUSDT_DATA/PENDLEUSDT_15m.csv"
+    else:
+        # Procurar diretamente em .data
+        csv_path = f"{base_dir}/PENDLEUSDT_15m.csv"
+    
+    print(f"🌐 RENDER: Buscando CSVs em {base_dir}")
+    print(f"   Arquivo: {csv_path}")
 else:
     csv_path = input("📌 Arquivo CRU (ex: C:\\BTC_MODELO\\IA_CRIPTO\\datasets\\BTCUSDT_15m_full_V14.csv): ").strip()
 
 if not os.path.isfile(csv_path):
     print(f"\n❌ ERRO: Arquivo não encontrado: {csv_path}")
+    print(f"\n🔍 Listando conteúdo de /opt/render/project/.data:")
+    try:
+        for item in os.listdir("/opt/render/project/.data"):
+            print(f"   - {item}")
+    except:
+        print("   (não conseguiu listar)")
     sys.exit(1)
 
 # Detectar Render e usar diretório padrão
-if os.path.exists("/opt/render"):
-    out_dir = "/opt/render/project/.data/PENDLEUSDT_DATA"
+if os.path.exists("/opt/render/project"):
+    out_dir = os.path.dirname(csv_path)  # Usar mesmo diretório do CSV
     print(f"📁 RENDER: Output em {out_dir}")
 else:
     out_dir = input("📁 Pasta de saída para modelos/relatórios: ").strip()
@@ -817,7 +833,7 @@ else:
 os.makedirs(out_dir, exist_ok=True)
 
 # Detectar Render e usar nome automático
-if os.path.exists("/opt/render"):
+if os.path.exists("/opt/render/project"):
     from datetime import datetime
     exp_name = f"RENDER_{datetime.now().strftime('%Y%m%d_%H%M')}"
     print(f"🏷 RENDER: Experimento {exp_name}")
@@ -1758,9 +1774,9 @@ if usar_ctx == "s":
 
         fname = f"{simbolo}_{tf}.csv"
         
-        # Render: usar diretório fixo; Local: usar diretório do CSV
-        if os.path.exists("/opt/render"):
-            path_tf = f"/opt/render/project/.data/PENDLEUSDT_DATA/{fname}"
+        # Render: usar mesmo diretório do CSV base
+        if os.path.exists("/opt/render/project"):
+            path_tf = os.path.join(os.path.dirname(csv_path), fname)
         else:
             path_tf = os.path.join(os.path.dirname(csv_path), fname)
 
