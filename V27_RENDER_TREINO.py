@@ -797,7 +797,7 @@ print("\n================= IA_CRIPTO — V25 FINAL REAL =================\n")
 # Detectar Render e encontrar CSVs (mesma lógica do audit)
 if os.path.exists("/opt/render/project"):
     # Render: buscar na estrutura .data
-    base_dir = "/opt/render/project/.data"
+    base_dir = "/data"
     
     # Procurar subdiretório PENDLEUSDT_DATA
     if os.path.exists(f"{base_dir}/PENDLEUSDT_DATA"):
@@ -813,9 +813,9 @@ else:
 
 if not os.path.isfile(csv_path):
     print(f"\n❌ ERRO: Arquivo não encontrado: {csv_path}")
-    print(f"\n🔍 Listando conteúdo de /opt/render/project/.data:")
+    print(f"\n🔍 Listando conteúdo de /data:")
     try:
-        for item in os.listdir("/opt/render/project/.data"):
+        for item in os.listdir("/data"):
             print(f"   - {item}")
     except:
         print("   (não conseguiu listar)")
