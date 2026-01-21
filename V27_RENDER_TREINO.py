@@ -67,29 +67,6 @@
 # ------------------------------------------------------------------------
 # ========================================================================
 
-# ██████████████████████████████████████████████████████████████████████
-# 🔧 CONFIGURAÇÃO PARA RENDER (adapta paths automaticamente)
-# ██████████████████████████████████████████████████████████████████████
-
-# Detectar se está rodando no Render
-RUNNING_ON_RENDER = os.path.exists("/opt/render")
-
-if RUNNING_ON_RENDER:
-    # Paths Render (CSVs já gerados pelo DataManager)
-    BASE_DATA_DIR = "/opt/render/project/.data/PENDLEUSDT_DATA"
-    DEFAULT_CSV_PATH = f"{BASE_DATA_DIR}/PENDLEUSDT_15m.csv"
-    DEFAULT_OUTPUT_DIR = BASE_DATA_DIR
-    print("🌐 MODO RENDER DETECTADO")
-    print(f"   CSV base: {DEFAULT_CSV_PATH}")
-    print(f"   Output: {DEFAULT_OUTPUT_DIR}")
-else:
-    # Local: mantém comportamento normal com inputs
-    DEFAULT_CSV_PATH = None
-    DEFAULT_OUTPUT_DIR = None
-    print("💻 MODO LOCAL")
-
-# ██████████████████████████████████████████████████████████████████████
-
 import os
 import sys
 import gc
@@ -817,40 +794,38 @@ print("\n================= IA_CRIPTO — V25 FINAL REAL =================\n")
 # INPUTS CONVERSACIONAIS — CONFIGURAÇÃO GERAL
 # ========================================================================
 
-if RUNNING_ON_RENDER:
-    # Render: usa CSV que DataManager já gerou
-    csv_path = DEFAULT_CSV_PATH
-    print(f"📌 Usando CSV do Render: {csv_path}")
+# Detectar Render e usar path padrão
+if os.path.exists("/opt/render"):
+    csv_path = "/opt/render/project/.data/PENDLEUSDT_DATA/PENDLEUSDT_15m.csv"
+    print(f"🌐 RENDER: Usando {csv_path}")
 else:
-    # Local: pede ao usuário
     csv_path = input("📌 Arquivo CRU (ex: C:\\BTC_MODELO\\IA_CRIPTO\\datasets\\BTCUSDT_15m_full_V14.csv): ").strip()
 
 if not os.path.isfile(csv_path):
     print(f"\n❌ ERRO: Arquivo não encontrado: {csv_path}")
     sys.exit(1)
 
-if RUNNING_ON_RENDER:
-    # Render: usa diretório padrão
-    out_dir = DEFAULT_OUTPUT_DIR
-    print(f"📁 Output: {out_dir}")
+# Detectar Render e usar diretório padrão
+if os.path.exists("/opt/render"):
+    out_dir = "/opt/render/project/.data/PENDLEUSDT_DATA"
+    print(f"📁 RENDER: Output em {out_dir}")
 else:
-    # Local: pede ao usuário
     out_dir = input("📁 Pasta de saída para modelos/relatórios: ").strip()
     if out_dir == "":
         out_dir = os.path.join(os.path.dirname(csv_path), "V25_MODELS")
 
 os.makedirs(out_dir, exist_ok=True)
 
-if RUNNING_ON_RENDER:
-    # Render: nome automático
+# Detectar Render e usar nome automático
+if os.path.exists("/opt/render"):
+    from datetime import datetime
     exp_name = f"RENDER_{datetime.now().strftime('%Y%m%d_%H%M')}"
-    print(f"🏷 Experimento: {exp_name}")
+    print(f"🏷 RENDER: Experimento {exp_name}")
 else:
-    # Local: pede ao usuário
     exp_name = input("🏷 Nome do experimento: ").strip()
     if exp_name == "":
         base = os.path.splitext(os.path.basename(csv_path))[0]
-    exp_name = base + "_V25"
+        exp_name = base + "_V25"
 
 print(f"\n✔ EXPERIMENTO: {exp_name}")
 print(f"✔ Pasta de saída: {out_dir}\n")
@@ -1783,9 +1758,9 @@ if usar_ctx == "s":
 
         fname = f"{simbolo}_{tf}.csv"
         
-        # Adaptar path para Render ou Local
-        if RUNNING_ON_RENDER:
-            path_tf = os.path.join(BASE_DATA_DIR, fname)
+        # Render: usar diretório fixo; Local: usar diretório do CSV
+        if os.path.exists("/opt/render"):
+            path_tf = f"/opt/render/project/.data/PENDLEUSDT_DATA/{fname}"
         else:
             path_tf = os.path.join(os.path.dirname(csv_path), fname)
 
