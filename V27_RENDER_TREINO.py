@@ -90,8 +90,20 @@ RUNNING_ON_RENDER = os.path.exists("/opt/render/project")
 
 # Carregar configuração se estiver no Render
 if RUNNING_ON_RENDER:
-    CONFIG_PATH = "/data/config_v27_render.json"
-    if os.path.exists(CONFIG_PATH):
+    # Procurar config em múltiplos lugares
+    CONFIG_PATHS = [
+        "/data/config_v27_render.json",  # Disco persistente
+        "/opt/render/project/src/config_v27_render.json",  # GitHub deploy
+        "./config_v27_render.json",  # Diretório atual
+    ]
+    
+    CONFIG_PATH = None
+    for path in CONFIG_PATHS:
+        if os.path.exists(path):
+            CONFIG_PATH = path
+            break
+    
+    if CONFIG_PATH:
         with open(CONFIG_PATH, 'r') as f:
             CONFIG = json.load(f)
         print("=" * 80)
@@ -100,7 +112,9 @@ if RUNNING_ON_RENDER:
         print("=" * 80)
         print()
     else:
-        print(f"❌ ERRO: Config não encontrado: {CONFIG_PATH}")
+        print(f"❌ ERRO: Config não encontrado em:")
+        for p in CONFIG_PATHS:
+            print(f"   - {p}")
         sys.exit(1)
 else:
     CONFIG = None  # Local usa inputs normais
