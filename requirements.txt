@@ -6,3 +6,5 @@ xgboost
 lightgbm
 scikit-learn>=1.3.0
 joblib
+aiodns
+catboost
