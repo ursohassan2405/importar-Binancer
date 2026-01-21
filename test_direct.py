@@ -1,4 +1,5 @@
 import os
+import pandas as pd
 
 path = "/data/PENDLEUSDT_DATA"
 
@@ -10,9 +11,35 @@ if os.path.exists(path):
     print()
     files = os.listdir(path)
     print(f"Arquivos ({len(files)}):")
+    print()
     for f in sorted(files):
         full = os.path.join(path, f)
         size_mb = os.path.getsize(full) / (1024*1024)
-        print(f"  {f} ({size_mb:.2f} MB)")
+        
+        # Contar linhas se for CSV
+        linhas = "N/A"
+        if f.endswith('.csv'):
+            try:
+                df = pd.read_csv(full)
+                linhas = f"{len(df):,} linhas"
+                
+                # Mostrar período se tiver coluna 'ts'
+                if 'ts' in df.columns:
+                    try:
+                        ts_min = pd.to_datetime(df['ts'].min(), unit='ms')
+                        ts_max = pd.to_datetime(df['ts'].max(), unit='ms')
+                        periodo = f" | {ts_min.date()} até {ts_max.date()}"
+                    except:
+                        periodo = ""
+                else:
+                    periodo = ""
+                    
+                linhas = linhas + periodo
+            except Exception as e:
+                linhas = f"ERRO ao ler: {e}"
+        
+        print(f"  📄 {f}")
+        print(f"     └─ {size_mb:.2f} MB | {linhas}")
+        print()
 else:
     print(f"❌ Diretório NÃO EXISTE!")
