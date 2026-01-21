@@ -5344,3 +5344,5 @@ if p_up > 0.75:
 print("\n✅ Funções de carregamento adicionadas!")
 print("   - carregar_sistema_completo()")
 print("   - aplicar_regimes_em_producao()")
+import sys
+sys.exit(0)
