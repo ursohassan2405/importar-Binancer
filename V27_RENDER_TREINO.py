@@ -98,7 +98,7 @@ from sklearn.pipeline import Pipeline
 
 from lightgbm import LGBMClassifier
 from xgboost import XGBClassifier
-from catboost import CatBoostClassifier
+# from catboost import CatBoostClassifier  # Removido - não disponível no Render
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.base import ClassifierMixin
 
