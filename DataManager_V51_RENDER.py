@@ -23,7 +23,7 @@ sys.stdout.reconfigure(line_buffering=True)
 # CONFIGURAÇÃO - EXATAMENTE IGUAL AO ORIGINAL
 # =========================
 SYMBOL = "PENDLEUSDT"
-START_DT = datetime(2025, 1, 1, 0, 0, 0)
+START_DT = datetime(2025, 8, 1, 0, 0, 0)
 END_DT = datetime(2025, 12, 30, 23, 59, 59)
 
 # Detectar Render e usar disco persistente
