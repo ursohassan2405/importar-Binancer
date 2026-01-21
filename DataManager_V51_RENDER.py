@@ -28,7 +28,7 @@ END_DT = datetime(2025, 12, 30, 23, 59, 59)
 
 # Detectar Render e usar disco persistente
 if os.path.exists("/opt/render/project"):
-    BASE_DIR = "/opt/render/project/.data"
+    BASE_DIR = "/data"  # Disco persistente configurado no Render
     OUT_DIR = f"{BASE_DIR}/PENDLEUSDT_DATA"
     ZIP_PATH = f"{BASE_DIR}/PENDLEUSDT_COMPLETO.zip"  # ZIP fora do diretório
     print("🌐 RENDER: Salvando em disco persistente")

@@ -1,6 +1,6 @@
 import os
 
-path = "/opt/render/project/.data/PENDLEUSDT_DATA"
+path = "/data/PENDLEUSDT_DATA"
 
 print(f"Testando acesso direto a: {path}")
 print()
