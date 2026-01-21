@@ -28,15 +28,18 @@ END_DT = datetime(2025, 12, 30, 23, 59, 59)
 
 # Detectar Render e usar disco persistente
 if os.path.exists("/opt/render/project"):
-    OUT_DIR = "/opt/render/project/.data/PENDLEUSDT_DATA"
+    BASE_DIR = "/opt/render/project/.data"
+    OUT_DIR = f"{BASE_DIR}/PENDLEUSDT_DATA"
+    ZIP_PATH = f"{BASE_DIR}/PENDLEUSDT_COMPLETO.zip"  # ZIP fora do diretório
     print("🌐 RENDER: Salvando em disco persistente")
-    print(f"   {OUT_DIR}")
+    print(f"   CSVs: {OUT_DIR}")
+    print(f"   ZIP: {ZIP_PATH}")
 else:
     OUT_DIR = "./pendle_agg_2025_01_01__2025_06_30"
+    ZIP_PATH = OUT_DIR + ".zip"
     print("💻 LOCAL: Salvando no diretório atual")
 
 CSV_PATH = os.path.join(OUT_DIR, "PENDLEUSDT_aggTrades.csv")
-ZIP_PATH = OUT_DIR + ".zip"
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
