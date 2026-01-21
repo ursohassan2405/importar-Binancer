@@ -81,6 +81,47 @@ import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")
 
+# ============================================================================
+# 🔧 SISTEMA DE CONFIGURAÇÃO AUTOMÁTICA (RENDER)
+# ============================================================================
+
+# Detectar se está no Render
+RUNNING_ON_RENDER = os.path.exists("/opt/render/project")
+
+# Carregar configuração se estiver no Render
+if RUNNING_ON_RENDER:
+    CONFIG_PATH = "/data/config_v27_render.json"
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, 'r') as f:
+            CONFIG = json.load(f)
+        print("=" * 80)
+        print("🌐 RENDER: Usando configuração automática")
+        print(f"   Config: {CONFIG_PATH}")
+        print("=" * 80)
+        print()
+    else:
+        print(f"❌ ERRO: Config não encontrado: {CONFIG_PATH}")
+        sys.exit(1)
+else:
+    CONFIG = None  # Local usa inputs normais
+    print("💻 MODO LOCAL: Inputs interativos")
+    print()
+
+def get_input(prompt, config_key=None, default=None):
+    """
+    Função universal para inputs
+    - No Render: lê do CONFIG
+    - No Local: pede input ao usuário
+    """
+    if RUNNING_ON_RENDER and CONFIG and config_key:
+        value = CONFIG.get(config_key, default)
+        print(f"{prompt}{value}")
+        return value
+    else:
+        return input(prompt).strip()
+
+# ============================================================================
+
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -1595,7 +1636,8 @@ print("===============================================================\n")
 
 # 1) Usuário informa somente o horizonte futuro
 try:
-    h_fut = int(input("Horizonte futuro N (ex: 3): ").strip())
+    h_fut_str = get_input("Horizonte futuro N (ex: 3): ", "horizonte", 5)
+    h_fut = int(h_fut_str) if not RUNNING_ON_RENDER else h_fut_str
     if h_fut <= 0:
         raise ValueError
 except:
@@ -1699,7 +1741,8 @@ print("\n===============================================================")
 print("MÓDULO 4 — CONTEXTO MULTI-TF (OPCIONAL / ZERO LEAKAGE)")
 print("===============================================================\n")
 
-usar_ctx = input("Adicionar contexto multi-TF? (s/n): ").strip().lower()
+usar_ctx_raw = get_input("Adicionar contexto multi-TF? (s/n): ", "multi_tf", True)
+usar_ctx = 's' if (usar_ctx_raw == True or usar_ctx_raw == 's') else 'n'
 
 if usar_ctx == "s":
 
@@ -1732,7 +1775,8 @@ if usar_ctx == "s":
     valid_tfs = hierarchy.get(tf_base, [])
     print(f">>> TFs maiores permitidos: {valid_tfs}")
 
-    escolha = input("Quais TFs deseja adicionar? (ex: 1h,4h,8h): ").strip().lower()
+    escolha_raw = get_input("Quais TFs deseja adicionar? (ex: 1h,4h,8h): ", "tfs", ["30m","1h","4h","8h","1d"])
+    escolha = ','.join(escolha_raw) if isinstance(escolha_raw, list) else escolha_raw.strip().lower()
     if escolha == "":
         chosen_tfs = []
     else:
@@ -2397,7 +2441,8 @@ def aplicar_peso_temporal(df):
 # PERGUNTA AO USUÁRIO — ATIVAR PESO TEMPORAL
 # (variável correta, função já definida ACIMA — sem erros)
 # ===============================================================
-usar_peso = input("Aplicar peso temporal no treinamento? (s/n): ").strip().lower()
+usar_peso_raw = get_input("Aplicar peso temporal no treinamento? (s/n): ", "peso_temporal", True)
+usar_peso = 's' if (usar_peso_raw == True or usar_peso_raw == 's') else 'n'
 if usar_peso == "s":
     df_all = aplicar_peso_temporal(df_all)
 
@@ -2555,7 +2600,7 @@ def aplicar_peso_avancado(df):
     print("4 = CUSTOMIZADO (todas as opções institucionais)")
     print("==============================================================")
 
-    modo = input("Escolha o modo de peso (1/2/3/4): ").strip()
+    modo = str(get_input("Escolha o modo de peso (1/2/3/4): ", "modo_peso", 1))
 
     # ----------------------------------------------------------
     # Padrões leve / moderado / agressivo

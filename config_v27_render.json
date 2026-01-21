@@ -1,0 +1,19 @@
+{
+  "horizonte": 5,
+  "multi_tf": true,
+  "tfs": ["30m", "1h", "4h", "8h", "1d"],
+  "peso_temporal": true,
+  "modo_peso": 1,
+  "k12": true,
+  "k6": true,
+  "rodar_simulacao": true,
+  "rodar_shuffle": true,
+  "capital_inicial": 1000,
+  "valor_entrada": 100,
+  "alavancagem": 10,
+  "confianca_minima": 0.70,
+  "usar_juiz": 0,
+  "analise_padroes": true,
+  "tamanho_padrao": 7,
+  "minimo_ocorrencias": 20
+}
