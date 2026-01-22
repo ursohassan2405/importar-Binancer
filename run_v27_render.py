@@ -69,6 +69,14 @@ inputs.append(str(config.get("minimo_ocorrencias", 20)))  # ocorrencias
 # Juntar tudo
 input_string = "\n".join(inputs) + "\n"
 
+# DEBUG: Mostrar inputs que serão passados
+print("🔍 DEBUG - INPUTS QUE SERÃO PASSADOS:")
+print("=" * 80)
+for i, inp in enumerate(inputs, 1):
+    print(f"{i:2d}. {inp}")
+print("=" * 80)
+print()
+
 # Rodar V27
 print(f"🚀 Iniciando V27 com {simbolo}...\n")
 
