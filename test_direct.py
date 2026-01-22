@@ -2,7 +2,7 @@ import os
 import pandas as pd
 from datetime import datetime
 
-path = "/data/PENDLEUSDT_DATA"
+path = "/data/NEARUSDT_DATA"
 
 print(f"Testando acesso direto a: {path}")
 print()
