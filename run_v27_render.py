@@ -1,28 +1,6 @@
 #!/usr/bin/env python3
 """
-WRAPPER PARA RODAR V27 NO RENDER
-Lê TUDO do config JSON
-
-ORDEM CORRETA DOS INPUTS DO V27:
-1. csv_path
-2. out_dir
-3. exp_name
-4. horizonte
-5. multi_tf (s/n)
-6. tfs (só se multi_tf == s)
-7. peso_temporal (s/n)
-8. modo_peso (só se peso_temporal == s)
-9. rodar_simulacao (s/n)
-10. k12 (s/n)
-11. k6 (s/n)
-12. capital_inicial (só se rodar_simulacao == s)
-13. valor_entrada
-14. alavancagem
-15. confianca_minima
-16. usar_juiz (s/n ou valor direto como 0.85)
-17. analise_padroes (s/n)
-18. tamanho_padrao (só se analise_padroes == s)
-19. minimo_ocorrencias (só se analise_padroes == s)
+WRAPPER PARA RODAR V27 NO RENDER (VERSÃO CORRIGIDA - ANTI-LOOPING)
 """
 
 import os
@@ -30,167 +8,119 @@ import sys
 import json
 import subprocess
 
-# Detectar Render
-if not os.path.exists("/opt/render/project"):
-    print("❌ Não está no Render!")
-    sys.exit(1)
+# 1. Detectar Ambiente e Caminhos
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+NOME_SCRIPT_ALVO = "V27_COM_REVERSAO_CORRIGIDO.py"
 
-# Carregar config
-CONFIG_PATHS = [
-    "/data/config_v27_render.json",
-    "/opt/render/project/src/config_v27_render.json",
-    "./config_v27_render.json",
+# Lista de caminhos possíveis para o script principal
+possiveis_caminhos = [
+    os.path.join(BASE_DIR, NOME_SCRIPT_ALVO),
+    os.path.join(BASE_DIR, "src", NOME_SCRIPT_ALVO),
+    os.path.join("/opt/render/project/src", NOME_SCRIPT_ALVO)
 ]
 
-CONFIG_PATH = None
-for path in CONFIG_PATHS:
-    if os.path.exists(path):
-        CONFIG_PATH = path
+script_final = None
+for caminho in possiveis_caminhos:
+    if os.path.exists(caminho):
+        script_final = caminho
         break
 
-if not CONFIG_PATH:
-    print("❌ Config não encontrado!")
+if not script_final:
+    print(f"❌ ERRO CRÍTICO: Não encontrei {NOME_SCRIPT_ALVO} em nenhuma dessas pastas:")
+    for p in possiveis_caminhos: print(f"   -> {p}")
     sys.exit(1)
 
-with open(CONFIG_PATH, 'r') as f:
+# 2. Carregar Configuração JSON
+CONFIG_PATHS = [
+    "/data/config_v27_render.json",
+    os.path.join(BASE_DIR, "config_v27_render.json"),
+    os.path.join(BASE_DIR, "src", "config_v27_render.json")
+]
+
+config_path = None
+for path in CONFIG_PATHS:
+    if os.path.exists(path):
+        config_path = path
+        break
+
+if not config_path:
+    print("❌ Config JSON não encontrado!")
+    sys.exit(1)
+
+with open(config_path, 'r') as f:
     config = json.load(f)
 
 print("=" * 80)
-print("🌐 RENDER: Rodando V27 com config automática")
-print(f"   Config: {CONFIG_PATH}")
+print("🌐 RENDER: Wrapper Ativo")
+print(f"   Script Alvo: {script_final}")
+print(f"   Config:      {config_path}")
 print("=" * 80)
-print()
 
-# Preparar inputs DIRETO do config
-simbolo = config.get("simbolo", "PENDLEUSDT")
+# 3. Montar a lista de inputs (Ordem exata do V27)
+simbolo = config.get("simbolo", "NEARUSDT")
 pasta_saida = config.get("pasta_saida", f"/data/{simbolo}_DATA")
 
-# ============================================================
-# ORDEM CORRETA DOS INPUTS (CONFORME V27 ESPERA)
-# ============================================================
-inputs = []
+inputs = [
+    f"{pasta_saida}/{simbolo}_15m.csv",      # 1. csv_path
+    pasta_saida,                             # 2. out_dir
+    f"RENDER_{os.urandom(4).hex()}",        # 3. exp_name
+    str(config.get("horizonte", 5)),         # 4. horizonte
+    "s" if config.get("multi_tf", True) else "n" # 5. multi_tf
+]
 
-# 1. csv_path
-inputs.append(f"{pasta_saida}/{simbolo}_15m.csv")
+if config.get("multi_tf", True):
+    inputs.append(",".join(config.get("tfs", ["30m", "1h", "4h", "8h", "1d"]))) # 6. tfs
 
-# 2. out_dir
-inputs.append(pasta_saida)
+inputs.append("s" if config.get("peso_temporal", True) else "n") # 7. peso_temporal
 
-# 3. exp_name
-inputs.append(f"RENDER_{os.urandom(4).hex()}")
+if config.get("peso_temporal", True):
+    inputs.append(str(config.get("modo_peso", 1))) # 8. modo_peso
 
-# 4. horizonte
-inputs.append(str(config.get("horizonte", 5)))
+rodar_sim = config.get("rodar_simulacao", True)
+inputs.append("s" if rodar_sim else "n") # 9. rodar_simulacao
+inputs.append("s" if config.get("k12", True) else "n") # 10. k12
+inputs.append("s" if config.get("k6", True) else "n") # 11. k6
 
-# 5. multi_tf (s/n)
-multi_tf = config.get("multi_tf", True)
-inputs.append("s" if multi_tf else "n")
-
-# 6. tfs (SÓ SE multi_tf == True)
-if multi_tf:
-    inputs.append(",".join(config.get("tfs", ["30m", "1h", "4h", "8h", "1d"])))
-
-# 7. peso_temporal (s/n)
-peso_temporal = config.get("peso_temporal", True)
-inputs.append("s" if peso_temporal else "n")
-
-# 8. modo_peso (SÓ SE peso_temporal == True)
-if peso_temporal:
-    inputs.append(str(config.get("modo_peso", 1)))
-
-# 9. rodar_simulacao (s/n) - VINHA ERRADO NA POSIÇÃO 11!
-rodar_simulacao = config.get("rodar_simulacao", True)
-inputs.append("s" if rodar_simulacao else "n")
-
-# 10. k12 (s/n)
-inputs.append("s" if config.get("k12", True) else "n")
-
-# 11. k6 (s/n)
-inputs.append("s" if config.get("k6", True) else "n")
-
-# 12-19. Parâmetros da simulação (SÓ SE rodar_simulacao == True)
-if rodar_simulacao:
-    # 12. capital_inicial
-    inputs.append(str(config.get("capital_inicial", 1000)))
+if rodar_sim:
+    inputs.extend([
+        str(config.get("capital_inicial", 1000)), # 12
+        str(config.get("valor_entrada", 100)),   # 13
+        str(config.get("alavancagem", 10)),      # 14
+        str(config.get("confianca_minima", 0.7)),# 15
+    ])
     
-    # 13. valor_entrada
-    inputs.append(str(config.get("valor_entrada", 100)))
-    
-    # 14. alavancagem
-    inputs.append(str(config.get("alavancagem", 10)))
-    
-    # 15. confianca_minima
-    inputs.append(str(config.get("confianca_minima", 0.70)))
-    
-    # 16. usar_juiz (pode ser s/n ou valor direto)
     usar_juiz = config.get("usar_juiz", 0)
-    if usar_juiz == 0 or usar_juiz == "n" or usar_juiz == False:
-        inputs.append("n")
-    elif usar_juiz == "s" or usar_juiz == True:
-        inputs.append("s")
-        inputs.append(str(config.get("rigor_juiz", 0.85)))  # Input adicional se s
+    if usar_juiz in [0, "n", False]:
+        inputs.append("n") # 16
     else:
-        # Valor numérico direto (ex: 0.85)
-        inputs.append(str(usar_juiz))
+        inputs.append("s") # 16
+        inputs.append(str(usar_juiz)) # Sub-input se s
     
-    # 17. analise_padroes (s/n)
-    analise_padroes = config.get("analise_padroes", True)
-    inputs.append("s" if analise_padroes else "n")
+    analise_p = config.get("analise_padroes", True)
+    inputs.append("s" if analise_p else "n") # 17
     
-    # 18-19. Parâmetros do analyzer (SÓ SE analise_padroes == True)
-    if analise_padroes:
-        inputs.append(str(config.get("tamanho_padrao", 7)))
-        inputs.append(str(config.get("minimo_ocorrencias", 20)))
+    if analise_p:
+        inputs.append(str(config.get("tamanho_padrao", 7))) # 18
+        inputs.append(str(config.get("minimo_ocorrencias", 20))) # 19
 
-# Juntar tudo
 input_string = "\n".join(inputs) + "\n"
 
-# DEBUG: Mostrar inputs que serão passados
-print("🔍 DEBUG - INPUTS QUE SERÃO PASSADOS:")
-print("=" * 80)
-for i, inp in enumerate(inputs, 1):
-    print(f"{i:2d}. {inp}")
-print("=" * 80)
-print()
-
-# Rodar V27
-print(f"🚀 Iniciando V27 com {simbolo}...\n")
-
-import os
-
-# Em vez de usar o caminho fixo /opt/render/project/src/...
-# Usamos o caminho relativo ao local onde o wrapper está rodando
-script_filename = "V27_COM_REVERSAO_CORRIGIDO.py"
-
-# Se o wrapper estiver na raiz e o script estiver dentro de 'src'
-if not os.path.exists(script_filename):
-    script_filename = os.path.join("src", script_filename)
-
-print(f"📂 Tentando abrir: {os.path.abspath(script_filename)}")
-
-# Rodar V27 usando o caminho dinâmico
+# 4. Execução com Stream de Log (Evita Looping e Timeout)
+print(f"🚀 Iniciando V27 para {simbolo}...\n")
 
 try:
     process = subprocess.Popen(
-        ["python3", "/opt/render/project/src/V27_COM_REVERSAO_CORRIGIDO.py"],
+        ["python3", "-u", script_final], # -u força logs em tempo real
         stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1
+        stdout=sys.stdout, # Envia direto para o console do Render
+        stderr=sys.stderr,
+        text=True
     )
     
-    stdout, _ = process.communicate(input=input_string, timeout=3600)
-    print(stdout)
+    # Enviar inputs e aguardar
+    process.communicate(input=input_string)
     sys.exit(process.returncode)
-    
-except subprocess.TimeoutExpired:
-    print("❌ TIMEOUT!")
-    process.kill()
-    sys.exit(1)
-    
+
 except Exception as e:
-    print(f"❌ ERRO: {e}")
-    import traceback
-    traceback.print_exc()
+    print(f"❌ ERRO NO WRAPPER: {e}")
     sys.exit(1)
