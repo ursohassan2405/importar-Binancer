@@ -156,6 +156,20 @@ print()
 # Rodar V27
 print(f"🚀 Iniciando V27 com {simbolo}...\n")
 
+import os
+
+# Em vez de usar o caminho fixo /opt/render/project/src/...
+# Usamos o caminho relativo ao local onde o wrapper está rodando
+script_filename = "V27_COM_REVERSAO_CORRIGIDO.py"
+
+# Se o wrapper estiver na raiz e o script estiver dentro de 'src'
+if not os.path.exists(script_filename):
+    script_filename = os.path.join("src", script_filename)
+
+print(f"📂 Tentando abrir: {os.path.abspath(script_filename)}")
+
+# Rodar V27 usando o caminho dinâmico
+
 try:
     process = subprocess.Popen(
         ["python3", "/opt/render/project/src/V27_COM_REVERSAO_CORRIGIDO.py"],
