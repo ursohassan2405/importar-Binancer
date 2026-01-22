@@ -20,7 +20,7 @@
   "valor_entrada": 100,
   "alavancagem": 10,
   "confianca_minima": 0.70,
-  "usar_juiz": 0,
+  "usar_juiz": n,
   "analise_padroes": true,
   "tamanho_padrao": 7,
   "minimo_ocorrencias": 20
