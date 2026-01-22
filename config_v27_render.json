@@ -13,7 +13,6 @@
   "peso_temporal": true,
   "modo_peso": 1,
   "k12": true,
-  "k6": true,
   "rodar_simulacao": true,
   "rodar_shuffle": true,
   "capital_inicial": 1000,
