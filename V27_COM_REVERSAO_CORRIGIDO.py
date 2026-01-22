@@ -2856,7 +2856,20 @@ def aplicar_ajustes_treino(df):
 # ============================================================
 # LIMPEZA FINAL — REMOVER NaN/INF ANTES DO TREINO (evitar erro RegLog)
 # ============================================================
+
+# 🔍 DIAGNÓSTICO: Mostrar estado ANTES do dropna
+print(f"\n[DIAG] ANTES do dropna: {len(df_all)} linhas")
+print(f"[DIAG] Total de NaN no df_all: {df_all.isna().sum().sum()}")
+nan_por_coluna = df_all.isna().sum()
+colunas_com_nan = nan_por_coluna[nan_por_coluna > 0].sort_values(ascending=False)
+if len(colunas_com_nan) > 0:
+    print(f"[DIAG] Colunas com NaN ({len(colunas_com_nan)} colunas):")
+    print(colunas_com_nan.head(20))
+else:
+    print("[DIAG] Nenhuma coluna com NaN!")
+
 df_all = df_all.replace([np.inf, -np.inf], np.nan).dropna()
+print(f"[DIAG] APÓS dropna: {len(df_all)} linhas")
 print("✔ Limpeza final aplicada — df_all livre de NaN/Inf.")
 
 # =============================================================================
