@@ -2857,16 +2857,32 @@ def aplicar_ajustes_treino(df):
 # LIMPEZA FINAL — REMOVER NaN/INF ANTES DO TREINO (evitar erro RegLog)
 # ============================================================
 
-# 🔍 DIAGNÓSTICO: Mostrar estado ANTES do dropna
-print(f"\n[DIAG] ANTES do dropna: {len(df_all)} linhas")
+# 🔍 DIAGNÓSTICO COMPLETO
+print(f"\n{'='*60}")
+print(f"[DIAG] VERSÕES DAS BIBLIOTECAS:")
+print(f"[DIAG] pandas: {pd.__version__}")
+print(f"[DIAG] numpy: {np.__version__}")
+print(f"{'='*60}")
+
+print(f"\n[DIAG] ANTES do dropna: {len(df_all)} linhas, {len(df_all.columns)} colunas")
 print(f"[DIAG] Total de NaN no df_all: {df_all.isna().sum().sum()}")
+
+# Mostrar colunas com NaN
 nan_por_coluna = df_all.isna().sum()
 colunas_com_nan = nan_por_coluna[nan_por_coluna > 0].sort_values(ascending=False)
 if len(colunas_com_nan) > 0:
     print(f"[DIAG] Colunas com NaN ({len(colunas_com_nan)} colunas):")
-    print(colunas_com_nan.head(20))
+    for col in colunas_com_nan.head(10).index:
+        print(f"       {col}: {colunas_com_nan[col]} NaN, dtype={df_all[col].dtype}")
 else:
     print("[DIAG] Nenhuma coluna com NaN!")
+
+# 🔧 CORREÇÃO: Preencher NaN em colunas que naturalmente têm NaN (pivots, absorção)
+colunas_para_fillna = [c for c in df_all.columns if any(x in c.lower() for x in ['pivot', 'absorcao', 'absorção'])]
+if colunas_para_fillna:
+    print(f"\n[DIAG] Preenchendo NaN em {len(colunas_para_fillna)} colunas (pivot/absorcao)...")
+    df_all[colunas_para_fillna] = df_all[colunas_para_fillna].fillna(0)
+    print(f"[DIAG] Após fillna: {df_all.isna().sum().sum()} NaN restantes")
 
 df_all = df_all.replace([np.inf, -np.inf], np.nan).dropna()
 print(f"[DIAG] APÓS dropna: {len(df_all)} linhas")
